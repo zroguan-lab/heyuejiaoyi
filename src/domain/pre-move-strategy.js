@@ -4,7 +4,7 @@ import { buildRiskPlan } from "./risk.js";
 import { classifyHourlyTrend } from "./market-structure.js";
 import { buildEntryReason, buildMarketEventId } from "./trade-reason.js";
 
-export const PRE_MOVE_SIGNAL_VERSION = "PRE_MOVE_1H_15M_5M_V2_4_2_RETAINED_FILTER";
+export const PRE_MOVE_SIGNAL_VERSION = "PRE_MOVE_1H_15M_5M_V2_4_3_BOUNDARY_FILTER";
 
 function clamp(value, minimum = 0, maximum = 1) {
   return Math.min(maximum, Math.max(minimum, value));
@@ -163,10 +163,10 @@ function buildPreMoveMetrics({ fifteen, five, direction, trend, radar }) {
 }
 
 export function analyzePreMove({ symbol, hourly, fifteen, five, radar = null, config, now = Date.now() }) {
-  if (!Number.isFinite(now) || now < 0) throw new TypeError("V2.4.2分析需要有效的now时间");
+  if (!Number.isFinite(now) || now < 0) throw new TypeError("V2.4.3分析需要有效的now时间");
   const minimum = Math.max(config.emaSlow + 5, config.atrPeriod + 10, 40);
   if (hourly.length < minimum || fifteen.length < minimum || five.length < minimum) {
-    return { symbol, status: "WAIT", message: "V2.4.2爆发前识别数据不足", trend: "NEUTRAL", candidates: [] };
+    return { symbol, status: "WAIT", message: "V2.4.3爆发前识别数据不足", trend: "NEUTRAL", candidates: [] };
   }
 
   const trend = classifyHourlyTrend(hourly, config);
@@ -176,7 +176,7 @@ export function analyzePreMove({ symbol, hourly, fifteen, five, radar = null, co
 
   const preMove = buildPreMoveMetrics({ fifteen, five, direction: trend.direction, trend, radar });
   if (!preMove) {
-    return { symbol, status: "WAIT", message: "V2.4.2爆发前指标不可用", trend: trend.direction, candidates: [] };
+    return { symbol, status: "WAIT", message: "V2.4.3爆发前指标不可用", trend: trend.direction, candidates: [] };
   }
   const maxBoundaryDistanceAtr = Number(config.preMoveMaxBoundaryDistanceAtr ?? 1.2);
   const maxCompressionRatio = Number(config.preMoveMaxCompressionRatio ?? 1.25);
@@ -194,7 +194,7 @@ export function analyzePreMove({ symbol, hourly, fifteen, five, radar = null, co
     return {
       symbol,
       status: "WAIT",
-      message: `V2.4.2等待：${waits.join("、")}`,
+      message: `V2.4.3等待：${waits.join("、")}`,
       trend: trend.direction,
       trendMetrics: trend.metrics,
       preMove,
@@ -218,7 +218,7 @@ export function analyzePreMove({ symbol, hourly, fifteen, five, radar = null, co
     return {
       symbol,
       status: "WAIT",
-      message: `V2.4.2风控未通过：${risk.reason}`,
+      message: `V2.4.3风控未通过：${risk.reason}`,
       trend: trend.direction,
       trendMetrics: trend.metrics,
       preMove,
@@ -269,7 +269,7 @@ export function analyzePreMove({ symbol, hourly, fifteen, five, radar = null, co
   return {
     symbol,
     status: "CANDIDATE",
-    message: `V2.4.2发现爆发前${trend.direction === "LONG" ? "做多" : "做空"}候选`,
+    message: `V2.4.3发现爆发前${trend.direction === "LONG" ? "做多" : "做空"}候选`,
     trend: trend.direction,
     trendMetrics: trend.metrics,
     preMove,

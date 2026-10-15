@@ -79,3 +79,70 @@ test("资金费率按方向、剩余仓位和标记价格计入净成本且不�
   const closed = advanceTradeTimeline(duplicate, [{ openTime: 5_000, closeTime: 6_000, open: 100, high: 101, low: 97, close: 98 }]);
   assert.equal(closed.pnl.net, -2.1);
 });
+
+test("多单MFE和MAE从成交后按初始风险R记录价格与时间", () => {
+  const pending = createSimulatedTrade(candidate(), { feeRate: 0 });
+  pending.entryExecution = { timeInForce: "IOC", maxAdverseSlippageBps: 10 };
+  const open = advanceTrade(pending, [{ openTime: 2_000, closeTime: 3_000, open: 100, high: 102, low: 99, close: 101 }]);
+  assert.equal(open.mfeR, 1);
+  assert.equal(open.maeR, 0.5);
+  assert.equal(open.mfePrice, 102);
+  assert.equal(open.maePrice, 99);
+  assert.equal(open.timeToMfeMs, 1_000);
+  assert.equal(open.timeToMaeMs, 1_000);
+});
+
+test("空单MFE和MAE方向与多单相反且仍以正R幅度表达", () => {
+  const shortCandidate = candidate({
+    direction: "SHORT",
+    risk: { entry: 100, stopLoss: 102, takeProfit1: 97, takeProfit2: 95 },
+  });
+  const pending = createSimulatedTrade(shortCandidate, { feeRate: 0 });
+  pending.entryExecution = { timeInForce: "IOC", maxAdverseSlippageBps: 10 };
+  const open = advanceTrade(pending, [{ openTime: 2_000, closeTime: 3_000, open: 100, high: 101, low: 98, close: 99 }]);
+  assert.equal(open.mfeR, 1);
+  assert.equal(open.maeR, 0.5);
+  assert.equal(open.mfePrice, 98);
+  assert.equal(open.maePrice, 101);
+});
+
+test("TP1后继续统计整笔交易MFE并记录BE止损前最大有利波动", () => {
+  const pending = createSimulatedTrade(candidate(), { feeRate: 0 });
+  pending.entryExecution = { timeInForce: "IOC", maxAdverseSlippageBps: 10 };
+  const afterTp1 = advanceTrade(pending, [{ openTime: 2_000, closeTime: 3_000, open: 100, high: 103.2, low: 99, close: 103 }]);
+  const extended = advanceTrade(afterTp1, [{ openTime: 4_000, closeTime: 5_000, open: 103, high: 104, low: 102, close: 103.5 }]);
+  const stopped = advanceTrade(extended, [{ openTime: 6_000, closeTime: 7_000, open: 103, high: 103.2, low: 99.5, close: 100 }]);
+  assert.equal(stopped.exitReason, "BREAKEVEN_AFTER_TP1");
+  assert.equal(stopped.mfeR, 2);
+  assert.equal(stopped.mfeBeforeStopR, 2);
+  assert.equal(stopped.maeBeforeTp1R, 0);
+  assert.equal(stopped.maxFavorableExcursionBeforeExitR, 2);
+  assert.equal(stopped.timeToTp1Ms, 1_000);
+  assert.equal(stopped.timeToStopMs, 5_000);
+});
+
+test("同K线止盈止损冲突沿用STOP_FIRST且不把止损后的高点计入MFE", () => {
+  const pending = createSimulatedTrade(candidate(), { feeRate: 0 });
+  pending.entryExecution = { timeInForce: "IOC", maxAdverseSlippageBps: 10 };
+  const closed = advanceTrade(pending, [{ openTime: 2_000, closeTime: 3_000, open: 100, high: 104, low: 97, close: 101 }]);
+  assert.equal(closed.exitReason, "AMBIGUOUS_STOP_FIRST");
+  assert.equal(closed.mfeR, 0);
+  assert.equal(closed.maeR, 1);
+  assert.equal(closed.mfeBeforeStopR, 0);
+});
+
+test("逐根推进与Replay时间线对MFE和MAE产生相同结果", () => {
+  const candles = [
+    { openTime: 2_000, closeTime: 3_000, open: 100, high: 102, low: 99, close: 101 },
+    { openTime: 4_000, closeTime: 5_000, open: 101, high: 103.2, low: 100.5, close: 103 },
+    { openTime: 6_000, closeTime: 7_000, open: 103, high: 105.2, low: 102, close: 105 },
+  ];
+  const first = createSimulatedTrade(candidate(), { feeRate: 0 });
+  first.entryExecution = { timeInForce: "IOC", maxAdverseSlippageBps: 10 };
+  let sequential = first;
+  for (const candle of candles) sequential = advanceTrade(sequential, [candle]);
+  const replay = advanceTradeTimeline(first, candles, []);
+  for (const key of ["mfeR", "maeR", "timeToTp1Ms", "timeToTp2Ms", "minutesHeld", "barsHeld5m"]) {
+    assert.equal(replay[key], sequential[key], key);
+  }
+});

@@ -239,7 +239,7 @@ export class ResearchStore {
     return null;
   }
 
-  async saveShadowDecision(candidate, { selected = false, rejectionReason = null, trade = null } = {}) {
+  async saveShadowDecision(candidate, { selected = false, rejectionReason = null, trade = null, counterfactual = false } = {}) {
     this.ensureReady();
     const evaluation = candidate?.shadowV2;
     if (!candidate?.id || evaluation?.mode !== "SHADOW_ONLY" || evaluation?.orderSubmissionAllowed !== false) {
@@ -253,6 +253,7 @@ export class ResearchStore {
       decision: {
         selected,
         rejectionReason,
+        counterfactual: Boolean(counterfactual),
         experimentTier: evaluation.experimentTier ?? null,
         decidedAt: now,
       },
@@ -276,9 +277,14 @@ export class ResearchStore {
     if (!row) throw new Error(`找不到 V2 影子信号 ${trade?.signalId}`);
     const payload = JSON.parse(row.payload);
     payload.trade = trade;
-    payload.decision = { ...(payload.decision ?? {}), selected: true, rejectionReason: null };
-    this.db.prepare("UPDATE shadow_signals SET selected = 1, status = ?, updated_at = ?, payload = ? WHERE signal_id = ?")
-      .run(trade.status, Date.now(), JSON.stringify(payload), trade.signalId);
+    const selected = payload.decision?.selected === true;
+    payload.decision = {
+      ...(payload.decision ?? {}),
+      selected,
+      rejectionReason: selected ? null : payload.decision?.rejectionReason ?? "COUNTERFACTUAL_RESEARCH",
+    };
+    this.db.prepare("UPDATE shadow_signals SET selected = ?, status = ?, updated_at = ?, payload = ? WHERE signal_id = ?")
+      .run(selected ? 1 : 0, trade.status, Date.now(), JSON.stringify(payload), trade.signalId);
     return trade;
   }
 
@@ -302,7 +308,7 @@ export class ResearchStore {
     this.ensureReady();
     return this.db.prepare(`
       SELECT payload FROM shadow_signals
-      WHERE selected = 1 AND status IN ('ENTRY_PENDING','OPEN','TP1_FILLED')
+      WHERE status IN ('ENTRY_PENDING','OPEN','TP1_FILLED')
       ORDER BY created_at
     `).all().map((row) => JSON.parse(row.payload).trade).filter(Boolean);
   }

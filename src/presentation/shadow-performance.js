@@ -1,9 +1,16 @@
+import { buildExcursionAttribution, buildOpportunitySourceAttribution } from "./research-attribution.js";
+
 function round(value, digits = 4) {
   return Number.isFinite(value) ? Number(value.toFixed(digits)) : null;
 }
-
 export function buildShadowPerformance(records = [], { startingEquity = 500 } = {}) {
-  const trades = records.map((record) => record?.trade).filter(Boolean);
+  const selectedRecords = records.filter((record) => (
+    record?.decision?.counterfactual !== true
+    && record?.decision?.selected !== false
+  ));
+  const counterfactualRecords = records.filter((record) => record?.decision?.counterfactual === true);
+  const trades = selectedRecords.map((record) => record?.trade).filter(Boolean);
+  const counterfactualTrades = counterfactualRecords.map((record) => record?.trade).filter(Boolean);
   const closed = trades.filter((trade) => trade.status === "CLOSED");
   const netValues = closed.map((trade) => Number(trade.pnl?.net) || 0);
   const rValues = closed.map((trade) => Number(trade.pnl?.netR)).filter(Number.isFinite);
@@ -29,7 +36,7 @@ export function buildShadowPerformance(records = [], { startingEquity = 500 } = 
     maxDrawdown: maxDrawdownPercent < 10,
   };
   return {
-    portfolio: "V2_4_2_PREMOVE",
+    portfolio: "V2_4_3_PREMOVE",
     sampleType: "FORWARD_DEMO_RESEARCH",
     startingEquity,
     currentEquity: round(startingEquity + totalNetPnl, 6),
@@ -42,6 +49,15 @@ export function buildShadowPerformance(records = [], { startingEquity = 500 } = 
     averageNetR: round(averageNetR, 4),
     profitFactor: Number.isFinite(profitFactor) ? round(profitFactor, 4) : null,
     maxDrawdownPercent: round(maxDrawdownPercent, 4),
+    researchAttribution: {
+      excursion: buildExcursionAttribution(closed),
+      opportunitySources: buildOpportunitySourceAttribution(closed),
+      counterfactualBoundaryOnly: {
+        closedTrades: counterfactualTrades.filter((trade) => trade.status === "CLOSED").length,
+        excursion: buildExcursionAttribution(counterfactualTrades),
+        opportunitySources: buildOpportunitySourceAttribution(counterfactualTrades),
+      },
+    },
     promotionGate: {
       eligible: Object.values(gateChecks).every(Boolean),
       checks: gateChecks,

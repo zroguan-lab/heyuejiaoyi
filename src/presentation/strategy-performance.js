@@ -1,3 +1,5 @@
+import { buildExcursionAttribution, buildOpportunitySourceAttribution } from "./research-attribution.js";
+
 const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 
 function finiteNumber(value, fallback = null) {
@@ -243,6 +245,10 @@ export function buildStrategyPerformance(trades = [], {
       eligible: Object.values(gateChecks).every(Boolean),
       checks: gateChecks,
       note: "达到100笔仅允许进入样本外复核，不等于可以使用真实资金",
+    },
+    researchAttribution: {
+      excursion: buildExcursionAttribution(finalizedTrades),
+      opportunitySources: buildOpportunitySourceAttribution(finalizedTrades),
     },
     points,
   };

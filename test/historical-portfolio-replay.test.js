@@ -173,3 +173,41 @@ test("M4把逐时点市场覆盖快照完整传给M3决策层", () => {
   assert.equal(result.decisions[0].promotionEligible, true);
   assert.ok(!result.researchOnlyReasons.includes("POINT_IN_TIME_MARKET_COVERAGE_INCOMPLETE"));
 });
+
+test("V2.4.3把BOUNDARY_PRESSURE-only放入独立反事实账且不占主组合权益", () => {
+  const decisionTime = 59_999;
+  const boundary = candidate("BTCUSDT", decisionTime);
+  boundary.marketRadar = { opportunitySources: ["RETAINED", "BOUNDARY_PRESSURE"] };
+  boundary.shadowV2 = {
+    ...boundary.shadowV2,
+    eligible: false,
+    hardRejectionReasons: ["V2_4_3_BOUNDARY_ONLY_NOT_TRADEABLE"],
+    rejectionReasons: ["V2_4_3_BOUNDARY_ONLY_NOT_TRADEABLE"],
+  };
+  const result = runHistoricalV23PortfolioReplay({
+    marketData: {
+      BTCUSDT: [
+        minute(0),
+        minute(60_000, { open: 100, high: 101, low: 99.5, close: 100.5 }),
+        minute(120_000, { open: 100.5, high: 106, low: 100, close: 105 }),
+      ],
+    },
+    contractRecords: [],
+    decisionTimes: [decisionTime],
+    endTime: 179_999,
+    config: config(),
+    decisionRunner: () => ({
+      radar: { snapshotId: "boundary-only" },
+      promotionEligible: true,
+      decisions: [{ decision: { candidates: [boundary] } }],
+    }),
+  });
+
+  assert.equal(result.trades.length, 0);
+  assert.equal(result.metrics.ordersCreated, 0);
+  assert.equal(result.metrics.endingEquity, 500);
+  assert.equal(result.counterfactualTrades.length, 1);
+  assert.equal(result.counterfactualTrades[0].counterfactual, true);
+  assert.equal(result.counterfactualTrades[0].portfolio, "V2_4_3_BOUNDARY_COUNTERFACTUAL");
+  assert.equal(result.researchAttribution.counterfactualBoundaryOnly.opportunitySources.combinations[0].combination, "BOUNDARY_PRESSURE + RETAINED");
+});

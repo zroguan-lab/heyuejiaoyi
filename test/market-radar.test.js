@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   buildMarketRadarSnapshot,
   deriveMoverMetrics,
+  independentTradeOpportunitySources,
+  isBoundaryPressureOnlyOpportunity,
   marketRadarContext,
   MARKET_RADAR_VERSION,
 } from "../src/domain/market-radar.js";
@@ -57,6 +59,17 @@ test("R3只用已收盘15分钟K线推导收益、量能、收缩与结构边界
   assert.equal(Number.isFinite(metrics.compressionRatio), true);
   assert.equal(Number.isFinite(metrics.nearestBoundaryAtr), true);
   assert.equal(Number.isFinite(metrics.volumeBuildRatio), true);
+});
+
+test("V2.4.3明确区分RETAINED、BOUNDARY_PRESSURE和真实独立来源", () => {
+  assert.deepEqual(independentTradeOpportunitySources(["RETAINED", "BOUNDARY_PRESSURE"]), []);
+  assert.equal(isBoundaryPressureOnlyOpportunity(["BOUNDARY_PRESSURE"]), true);
+  assert.equal(isBoundaryPressureOnlyOpportunity(["RETAINED", "BOUNDARY_PRESSURE"]), true);
+  assert.deepEqual(
+    independentTradeOpportunitySources(["RETAINED", "BOUNDARY_PRESSURE", "VOLATILITY_COMPRESSION"]),
+    ["VOLATILITY_COMPRESSION"],
+  );
+  assert.equal(isBoundaryPressureOnlyOpportunity(["BOUNDARY_PRESSURE", "VOLATILITY_COMPRESSION"]), false);
 });
 
 test("R3从高流动性发现池同时选择早期蓄势与异动标的", () => {

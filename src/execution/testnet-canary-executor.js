@@ -30,6 +30,12 @@ import {
   V1_EXECUTION_SOURCE,
   assertExecutionStrategySource,
 } from "./execution-strategy-source.js";
+import {
+  createTradeExcursionState,
+  finalizeTradeExcursion,
+  markTradeExcursionMilestone,
+  observeTradeExcursion,
+} from "../domain/trade-excursion.js";
 
 const TERMINAL_STATUSES = new Set(["CLOSED", "CANCELED", "REJECTED", "FAILED"]);
 const ENTRY_STATUSES = new Set(["ENTRY_SUBMITTING", "SUBMISSION_UNKNOWN", "ENTRY_PENDING", "PARTIALLY_FILLED"]);
@@ -155,31 +161,118 @@ function excludeUndersizedStrategyFill(run, metrics) {
   return true;
 }
 
+function entryTime(run) {
+  const value = Number(run.entryOrder?.updateTime ?? run.entryExecution?.completedAt ?? run.updatedAt ?? run.createdAt);
+  return Number.isFinite(value) ? value : null;
+}
+
+function ensureRunExcursion(run) {
+  const entryPrice = positiveNumber(run.entryOrder?.averagePrice, run.entryOrder?.price, run.plan?.prices?.entry);
+  const stopLoss = Number(run.plan?.prices?.stopLoss);
+  const openedAt = entryTime(run);
+  if (![entryPrice, stopLoss, openedAt].every(Number.isFinite) || entryPrice <= 0 || stopLoss <= 0) return null;
+  if (run.performance?.modelVersion === "TRADE_EXCURSION_R1") return run.performance;
+  const legacy = run.performance ?? {};
+  const state = createTradeExcursionState({ direction: run.plan.direction, entryPrice, stopLoss, openedAt });
+  const legacyMfeR = Math.max(0, Number(legacy.mfeR) || 0);
+  const legacyMaeR = Math.abs(Number(legacy.maeR) || 0);
+  state.mfeR = legacyMfeR;
+  state.maeR = legacyMaeR;
+  state.mfePrice = run.plan.direction === "LONG"
+    ? entryPrice + legacyMfeR * state.initialRiskPrice
+    : entryPrice - legacyMfeR * state.initialRiskPrice;
+  state.maePrice = run.plan.direction === "LONG"
+    ? entryPrice - legacyMaeR * state.initialRiskPrice
+    : entryPrice + legacyMaeR * state.initialRiskPrice;
+  run.performance = {
+    ...legacy,
+    ...state,
+    samples: Number(legacy.samples ?? 0),
+    mfePnl: Number(legacy.mfePnl ?? 0),
+    maePnl: Number(legacy.maePnl ?? 0),
+  };
+  return run.performance;
+}
+
 function updateExcursions(run, position, observedAt) {
   const markPrice = Number(position?.markPrice);
+  const performance = ensureRunExcursion(run);
+  if (!performance || !Number.isFinite(markPrice) || markPrice <= 0) return;
+  const updated = observeTradeExcursion(performance, { low: markPrice, high: markPrice, observedAt });
   const entryPrice = positiveNumber(run.entryOrder?.averagePrice, run.entryOrder?.price, run.plan?.prices?.entry);
   const quantity = Number(run.entryOrder?.executedQuantity ?? run.plan?.quantity);
   const riskAmount = Number(run.executionMetrics?.actualRiskAmount ?? run.plan?.riskAmountEstimate);
-  if (![markPrice, entryPrice, quantity].every(Number.isFinite) || markPrice <= 0 || entryPrice <= 0 || quantity <= 0) return;
+  if (![entryPrice, quantity].every(Number.isFinite) || entryPrice <= 0 || quantity <= 0) return;
   const directionSign = run.plan.direction === "LONG" ? 1 : -1;
   const excursionPnl = directionSign * (markPrice - entryPrice) * quantity;
-  const performance = run.performance ?? {
-    mfePnl: 0,
-    maePnl: 0,
-    mfeR: 0,
-    maeR: 0,
-    samples: 0,
-    lastObservedAt: null,
-  };
-  performance.mfePnl = Math.max(Number(performance.mfePnl ?? 0), excursionPnl);
-  performance.maePnl = Math.min(Number(performance.maePnl ?? 0), excursionPnl);
+  updated.mfePnl = Math.max(Number(performance.mfePnl ?? 0), excursionPnl);
+  updated.maePnl = Math.min(Number(performance.maePnl ?? 0), excursionPnl);
   if (Number.isFinite(riskAmount) && riskAmount > 0) {
-    performance.mfeR = performance.mfePnl / riskAmount;
-    performance.maeR = performance.maePnl / riskAmount;
+    updated.mfeR = updated.mfePnl / riskAmount;
+    updated.maeR = Math.abs(updated.maePnl / riskAmount);
   }
-  performance.samples = Number(performance.samples ?? 0) + 1;
-  performance.lastObservedAt = observedAt;
-  run.performance = performance;
+  updated.samples = Number(performance.samples ?? 0) + 1;
+  run.performance = updated;
+}
+
+function markRunMilestone(run, type, at, price = null) {
+  let performance = ensureRunExcursion(run);
+  if (!performance) return;
+  if (Number.isFinite(Number(price)) && Number(price) > 0) {
+    performance = observeTradeExcursion(performance, { low: Number(price), high: Number(price), observedAt: Math.max(Number(at), performance.lastObservedAt) });
+  }
+  run.performance = markTradeExcursionMilestone(performance, type, Math.max(Number(at), performance.openedAt));
+}
+
+function matchingTradeTime(result, order) {
+  const ids = new Set([order?.actualOrderId, order?.orderId].filter(Boolean).map(String));
+  const times = (result?.trades ?? [])
+    .filter((trade) => ids.has(String(trade.orderId)))
+    .map((trade) => Number(trade.time))
+    .filter(Number.isFinite);
+  return times.length ? Math.min(...times) : Number(order?.updateTime) || null;
+}
+
+function matchingTradePrice(result, order, fallback) {
+  const ids = new Set([order?.actualOrderId, order?.orderId].filter(Boolean).map(String));
+  const match = (result?.trades ?? []).find((trade) => ids.has(String(trade.orderId)) && Number(trade.price) > 0);
+  return Number(match?.price) || Number(fallback) || null;
+}
+
+function finalizeRunExcursions(run, result, observedAt) {
+  let performance = ensureRunExcursion(run);
+  if (!performance) return;
+  const tp1At = matchingTradeTime(result, run.protection?.takeProfit1);
+  if (tp1At !== null && performance.timeToTp1Ms === null) {
+    markRunMilestone(run, "TP1", tp1At, matchingTradePrice(result, run.protection?.takeProfit1, run.plan.prices.takeProfit1));
+    performance = run.performance;
+  }
+  const role = result?.exitRole;
+  const roleOrder = role === "operatorClose" ? run.operatorCloseOrder : run.protection?.[role];
+  const exitAt = matchingTradeTime(result, roleOrder) ?? Number(observedAt);
+  const fallbackPrice = role === "takeProfit2" ? run.plan.prices.takeProfit2
+    : role === "takeProfit1" ? run.plan.prices.takeProfit1
+      : role === "breakEvenStop" ? run.plan.prices.entry
+        : role === "stop" ? run.plan.prices.stopLoss : null;
+  const exitPrice = matchingTradePrice(result, roleOrder, fallbackPrice);
+  if (Number.isFinite(exitPrice) && exitPrice > 0) {
+    performance = observeTradeExcursion(performance, {
+      low: exitPrice,
+      high: exitPrice,
+      observedAt: Math.max(exitAt, performance.lastObservedAt),
+    });
+  }
+  if (role === "takeProfit2" && performance.timeToTp2Ms === null) {
+    performance = markTradeExcursionMilestone(performance, "TP2", Math.max(exitAt, performance.openedAt));
+  }
+  const stopExit = role === "stop" || role === "breakEvenStop";
+  if (stopExit && performance.timeToStopMs === null) {
+    performance = markTradeExcursionMilestone(performance, "STOP", Math.max(exitAt, performance.openedAt));
+  }
+  run.performance = finalizeTradeExcursion(performance, {
+    closedAt: Math.max(exitAt, performance.openedAt),
+    exitReason: role === "breakEvenStop" ? "BREAKEVEN_AFTER_TP1" : role === "stop" ? "STOP_LOSS" : role,
+  });
 }
 
 export class TestnetCanaryExecutor extends EventEmitter {
@@ -1157,6 +1250,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
           ownedOrderIds: accounting.ownedOrderIds,
         });
       }
+      finalizeRunExcursions(run, result, this.now());
       run.status = "CLOSED";
       run.error = null;
       run.result = result;
@@ -1199,6 +1293,10 @@ export class TestnetCanaryExecutor extends EventEmitter {
 
     const tp1 = protection.takeProfit1;
     const tp1Filled = Number(tp1?.actualQuantity ?? 0) > 0;
+    if (tp1Filled && run.performance?.timeToTp1Ms === null) {
+      const tp1At = Number(tp1?.updateTime) || this.now();
+      markRunMilestone(run, "TP1", tp1At, run.plan.prices.takeProfit1);
+    }
     const activeStopBeforeRecovery = isActiveAlgo(protection.breakEvenStop) || isActiveAlgo(protection.stop);
     if (run.status === "ERROR_UNPROTECTED") {
       if (!activeStopBeforeRecovery) {
@@ -1423,7 +1521,8 @@ export class TestnetCanaryExecutor extends EventEmitter {
     }
     run.exchange = account;
     const accounting = await this.collectRunTrades(run);
-    run.result = this.buildRunResult(accounting);
+    run.result = this.buildRunResult(accounting, run);
+    finalizeRunExcursions(run, run.result, this.now());
     run.error = null;
     return await this.persist(run, "CANARY_ACCOUNTING_REFRESHED", {
       commission: run.result.commission,

@@ -46,6 +46,9 @@ const elements = {
   sampleValidationStatus: document.querySelector("#sample-validation-status"),
   tierSummary: document.querySelector("#tier-summary"),
   segmentSummary: document.querySelector("#segment-summary"),
+  excursionResearchNote: document.querySelector("#excursion-research-note"),
+  excursionResearchSummary: document.querySelector("#excursion-research-summary"),
+  sourceCombinationSummary: document.querySelector("#source-combination-summary"),
   chartMetricControl: document.querySelector("#chart-metric-control"),
   chartRangeControl: document.querySelector("#chart-range-control"),
   scanMeta: document.querySelector("#scan-meta"),
@@ -330,6 +333,7 @@ function renderPerformance(performance, executionSummary = chartState.executionS
       ? `不含未平仓浮盈亏 · ${pendingCount} 笔在途/待对账`
       : "不含未平仓浮盈亏";
   renderExperimentPerformance(performance);
+  renderResearchAttribution(performance);
 
   const metric = chartMetrics[chartState.metric];
   const allPoints = Array.isArray(performance?.points) ? performance.points : [];
@@ -414,6 +418,38 @@ function renderExperimentPerformance(performance) {
   elements.segmentSummary.innerHTML = (performance?.segments ?? []).map(formatSummaryCard).join("");
 }
 
+function renderResearchAttribution(performance) {
+  const research = performance?.researchAttribution ?? {};
+  const excursion = research.excursion ?? {};
+  const percent = (value) => Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(1)}%` : "—";
+  const duration = (value) => Number.isFinite(Number(value)) ? `${(Number(value) / 60_000).toFixed(1)} 分钟` : "—";
+  elements.excursionResearchNote.textContent = excursion.closedTrades
+    ? `已结算 ${excursion.closedTrades} 笔 · 止损样本 ${excursion.stopTrades ?? 0} 笔 · 本区仅用于判断入场与出场问题，不改变主绩效口径。`
+    : "等待已结算交易形成 MFE / MAE 研究样本。";
+  const metrics = [
+    ["止损单 MFE 中位数", Number.isFinite(excursion.stopMedianMfeR) ? `${excursion.stopMedianMfeR.toFixed(3)}R` : "—"],
+    ["盈利单 MAE 中位数", Number.isFinite(excursion.winnerMedianMaeR) ? `${excursion.winnerMedianMaeR.toFixed(3)}R` : "—"],
+    ["止损前 MFE < 0.2R", percent(excursion.stopMfeBelow0_2RRatio)],
+    ["止损前 MFE > 0.5R", percent(excursion.stopMfeAbove0_5RRatio)],
+    ["止损前 MFE > 1.0R", percent(excursion.stopMfeAbove1RRatio)],
+    ["到 MFE 中位时间", duration(excursion.medianTimeToMfeMs)],
+    ["到止损中位时间", duration(excursion.medianTimeToStopMs)],
+    ["BE 止损样本", `${excursion.breakEvenStopMfeDistribution?.count ?? 0} 笔`],
+  ];
+  elements.excursionResearchSummary.innerHTML = metrics
+    .map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
+    .join("");
+
+  const combinations = research.opportunitySources?.combinations ?? [];
+  elements.sourceCombinationSummary.innerHTML = combinations.length
+    ? combinations.slice(0, 12).map((item) => `<article>
+      <span>${escapeHtml(item.combination)}</span>
+      <strong>${item.trades} 笔 · ${escapeHtml(item.sampleStatus)}</strong>
+      <small>胜率 ${percent(item.winRate)} · 平均 ${Number.isFinite(item.avgNetR) ? `${item.avgNetR.toFixed(3)}R` : "—"} · PF ${Number.isFinite(item.profitFactor) ? item.profitFactor.toFixed(2) : "—"}<br>MFE ${Number.isFinite(item.avgMfeR) ? item.avgMfeR.toFixed(2) : "—"}R · MAE ${Number.isFinite(item.avgMaeR) ? item.avgMaeR.toFixed(2) : "—"}R · 成本 ${Number.isFinite(item.avgCostR) ? item.avgCostR.toFixed(3) : "—"}R · 持仓 ${Number.isFinite(item.avgHoldingMinutes) ? item.avgHoldingMinutes.toFixed(1) : "—"}分钟</small>
+    </article>`).join("")
+    : '<div class="empty-state">等待来源组合形成已结算样本</div>';
+}
+
 function render(data) {
   const monitor = data.monitor;
   const activePortfolio = (data.portfolio ?? []).filter((item) => ["ENTRY_PENDING", "OPEN", "TP1_FILLED"].includes(item.trade?.status));
@@ -429,7 +465,7 @@ function render(data) {
   const submissionEnabled = Boolean(execution.effectiveOrderSubmissionEnabled);
   const autoWatching = automation.enabled && automation.status === "WATCHING" && !executionHalted;
   const v2Execution = automation.strategySource === "V2_PRODUCTION";
-  elements.modeMark.textContent = emergencyStop.active ? "Demo 紧急停止" : safetyHold.active ? "Demo 安全暂停" : autoWatching ? `${v2Execution ? "V2.4.2 " : "V1 "}Demo 自动执行` : isTestnet ? "测试网研究模式" : "研究模式";
+  elements.modeMark.textContent = emergencyStop.active ? "Demo 紧急停止" : safetyHold.active ? "Demo 安全暂停" : autoWatching ? `${v2Execution ? "V2.4.3 " : "V1 "}Demo 自动执行` : isTestnet ? "测试网研究模式" : "研究模式";
   const testnetAccount = execution.account ?? {};
   const readiness = execution.readiness ?? {};
   const capacity = execution.capacity ?? {};
@@ -443,7 +479,7 @@ function render(data) {
     ? `执行流水 ${safetyHold.runId ?? "—"} 处于${executionStatusLabel(safetyHold.status)}，新订单暂停，交易所事实对账完成后自动恢复。`
     : autoWatching
     ? v2Execution
-      ? "V2.4.2先寻找波动收缩且靠近结构边界的标的；仅靠RETAINED保留的候选不会下单，做多仍须通过原有确认。总成本不超过0.20R进入普通组，0.20R至0.35R进入高成本探索组，超过0.35R拒绝。"
+      ? "V2.4.3先寻找爆发前标的；仅靠RETAINED或去除RETAINED后仅剩BOUNDARY_PRESSURE的候选保留研究但不会下单。评分、方向、止盈止损、仓位与成本规则保持V2.4.2不变。"
       : "系统会把所有达到评分门槛、仍有效且通过执行校验的 V1 信号提交到 Binance Demo；真实资金账户始终不可用。"
     : gateway.orderSubmissionEnabled
       ? "策略信号测试网执行已解锁；只有已进入组合并通过确认的单笔计划可以提交。"
@@ -484,8 +520,8 @@ function render(data) {
       : "本区读取 Binance 测试网账户；上方模拟组合仍是独立的本地记录。";
   elements.marketCount.textContent = String(monitor.universeSize ?? monitor.symbols.length);
   elements.activeCount.textContent = String(activePortfolio.length);
-  elements.demoPnlLabel.textContent = v2Execution ? "V2.4.2 Demo 净盈亏" : "Demo 净盈亏";
-  elements.portfolioTitle.textContent = v2Execution ? "V2.4.2 Pre-Move 可执行信号" : "策略组合信号";
+  elements.demoPnlLabel.textContent = v2Execution ? "V2.4.3 Demo 净盈亏" : "Demo 净盈亏";
+  elements.portfolioTitle.textContent = v2Execution ? "V2.4.3 Pre-Move 可执行信号" : "策略组合信号";
   elements.performanceBasis.textContent = data.performanceEpoch
     ? `当前纪元 ${data.performanceEpoch.id ?? "V2"} · 从 ${formatTime(data.performanceEpoch.startedAt)} 起重新计算 · 旧版本历史仍保留`
     : "仅统计已平仓且账务完成的策略订单 · 北京时间归属交易日";

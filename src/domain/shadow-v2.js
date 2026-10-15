@@ -1,7 +1,7 @@
 import { regimeDirectionScore } from "./market-regime.js";
-import { isRetentionOnlyOpportunity } from "./market-radar.js";
+import { isBoundaryPressureOnlyOpportunity, isRetentionOnlyOpportunity } from "./market-radar.js";
 
-export const SHADOW_STRATEGY_VERSION = "PRE_MOVE_1H_15M_5M_V2_4_2_RETAINED_FILTER";
+export const SHADOW_STRATEGY_VERSION = "PRE_MOVE_1H_15M_5M_V2_4_3_BOUNDARY_FILTER";
 export const V2_1_CORE_TIER = "CORE";
 export const V2_1_EXPLORATION_TIER = "EXPLORATION";
 
@@ -116,6 +116,9 @@ function evaluatePreMoveCandidate(candidate, { marketRegime, costEstimate, fixed
   if (isRetentionOnlyOpportunity(marketRadar?.opportunitySources)) {
     hardRejectionReasons.push("V2_4_2_RETAINED_ONLY_NOT_TRADEABLE");
   }
+  if (isBoundaryPressureOnlyOpportunity(marketRadar?.opportunitySources)) {
+    hardRejectionReasons.push("V2_4_3_BOUNDARY_ONLY_NOT_TRADEABLE");
+  }
   if (!Number.isFinite(rawExplosionScore) || !Number.isFinite(rawDirectionScore)) hardRejectionReasons.push("PRE_MOVE_SCORE_UNAVAILABLE");
   if (Number.isFinite(rawExplosionScore) && rawExplosionScore < Number(config.preMoveHardMinimumExplosionScore ?? 35)) {
     hardRejectionReasons.push("PRE_MOVE_EXPLOSION_TOO_WEAK");
@@ -204,7 +207,7 @@ function evaluatePreMoveCandidate(candidate, { marketRegime, costEstimate, fixed
     mode: "SHADOW_ONLY",
     orderSubmissionAllowed: false,
     score,
-    scoreModel: "PRE_MOVE_V2_4_2_RETAINED_FILTER",
+    scoreModel: "PRE_MOVE_V2_4_3_BOUNDARY_FILTER",
     eligible: experimentTier !== null,
     experimentTier,
     coreMinimumScore,
@@ -362,7 +365,7 @@ export function selectProductionShadowCandidates(candidates, activeTrades = [], 
   return {
     selected,
     rejected,
-    selectionMode: "V2_4_2_PREMOVE_RETAINED_FILTER_ALL_ELIGIBLE",
+    selectionMode: "V2_4_3_PREMOVE_BOUNDARY_FILTER_ALL_ELIGIBLE",
     totalRiskPercent: round(totalRisk, 4),
     fixedPositionLimit: null,
     correlationLimitEnforced: false,

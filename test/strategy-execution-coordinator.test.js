@@ -6,7 +6,7 @@ import {
   StrategyExecutionCoordinator,
 } from "../src/application/strategy-execution-coordinator.js";
 import {
-  V2_4_2_SIGNAL_MODEL_VERSION,
+  V2_4_3_SIGNAL_MODEL_VERSION,
   V2_DEMO_STRATEGY_VERSION,
   V2_EXECUTION_SOURCE,
 } from "../src/execution/execution-strategy-source.js";
@@ -261,7 +261,7 @@ test("V2 shadowSignal 事件永远不会进入 Demo 自动下单协调器", asyn
   coordinator.stop();
 });
 
-test("显式切换到 V2.4.2 后只执行纪元内的 V2.4.2 入选信号且忽略旧版本和V1事件", async () => {
+test("显式切换到 V2.4.3 后只执行纪元内的 V2.4.3 入选信号且忽略旧版本和V1事件", async () => {
   const now = 6_000_000;
   const v1 = signal("v1-new", now, { symbol: "BTCUSDT", triggerTime: now });
   const v2 = signal("v2-new", now, { symbol: "ETHUSDT", triggerTime: now, score: 82 });
@@ -271,14 +271,14 @@ test("显式切换到 V2.4.2 后只执行纪元内的 V2.4.2 入选信号且忽�
     orderSubmissionAllowed: false,
     eligible: true,
     score: 82,
-    strategyVersion: V2_4_2_SIGNAL_MODEL_VERSION,
+    strategyVersion: V2_4_3_SIGNAL_MODEL_VERSION,
     experimentTier: "CORE",
     costs: { totalCostR: 0.1 },
   };
   v2.candidate.strategyVersion = V2_DEMO_STRATEGY_VERSION;
   v2.candidate.executionSource = V2_EXECUTION_SOURCE;
   v2.candidate.experimentTier = "CORE";
-  v2.trade.portfolio = "V2_4_2_PREMOVE";
+  v2.trade.portfolio = "V2_4_3_PREMOVE";
   v2.trade.orderSubmissionAllowed = false;
   const old = structuredClone(v2);
   old.candidate.id = "v2-old";
@@ -306,7 +306,7 @@ test("显式切换到 V2.4.2 后只执行纪元内的 V2.4.2 入选信号且忽�
   await coordinator.drain();
   assert.deepEqual(executor.prepared, ["v2-new"]);
   assert.equal(coordinator.snapshot().strategySource, V2_EXECUTION_SOURCE);
-  assert.equal(coordinator.snapshot().positionPolicy, "V2_4_2_PREMOVE_RETAINED_FILTER_ALL_ELIGIBLE");
+  assert.equal(coordinator.snapshot().positionPolicy, "V2_4_3_PREMOVE_BOUNDARY_FILTER_ALL_ELIGIBLE");
   coordinator.stop();
 });
 
@@ -333,10 +333,10 @@ test("旧V2.1探索层即使达到55分也不能再由Demo适配器执行", () =
     epochStartedAt: now - 1,
   });
   assert.equal(assessment.eligible, false);
-  assert.equal(assessment.reason, "V2_4_2_SIGNAL_MODEL_REQUIRED");
+  assert.equal(assessment.reason, "V2_4_3_SIGNAL_MODEL_REQUIRED");
 });
 
-test("V2.4.2沿用0.20R至0.35R探索组且拒绝超过0.35R", () => {
+test("V2.4.3沿用0.20R至0.35R探索组且拒绝超过0.35R", () => {
   const now = 7_500_000;
   const record = signal("v2-costly", now, { score: 75 });
   record.executionSource = V2_EXECUTION_SOURCE;
@@ -348,11 +348,11 @@ test("V2.4.2沿用0.20R至0.35R探索组且拒绝超过0.35R", () => {
     orderSubmissionAllowed: false,
     eligible: true,
     score: 75,
-    strategyVersion: V2_4_2_SIGNAL_MODEL_VERSION,
+    strategyVersion: V2_4_3_SIGNAL_MODEL_VERSION,
     experimentTier: "EXPLORATION",
     costs: { totalCostR: 0.2001 },
   };
-  record.trade.portfolio = "V2_4_2_PREMOVE";
+  record.trade.portfolio = "V2_4_3_PREMOVE";
   record.trade.orderSubmissionAllowed = false;
   const assessment = assessAutomaticExecutionSignal(record, {
     now,
@@ -373,7 +373,7 @@ test("V2.4.2沿用0.20R至0.35R探索组且拒绝超过0.35R", () => {
     epochStartedAt: now - 1,
   });
   assert.equal(rejected.eligible, false);
-  assert.equal(rejected.reason, "V2_4_2_EXECUTION_COST_R_ABOVE_0_35");
+  assert.equal(rejected.reason, "V2_4_3_EXECUTION_COST_R_ABOVE_0_35");
 });
 
 test("V2 Demo 准入拒绝缺少当前市场雷达版本的旧信号", () => {
@@ -382,9 +382,9 @@ test("V2 Demo 准入拒绝缺少当前市场雷达版本的旧信号", () => {
   record.executionSource = V2_EXECUTION_SOURCE;
   record.evaluation = {
     mode: "SHADOW_ONLY", orderSubmissionAllowed: false, eligible: true, score: 80,
-    strategyVersion: V2_4_2_SIGNAL_MODEL_VERSION, experimentTier: "CORE", costs: { totalCostR: 0.1 },
+    strategyVersion: V2_4_3_SIGNAL_MODEL_VERSION, experimentTier: "CORE", costs: { totalCostR: 0.1 },
   };
-  record.trade.portfolio = "V2_4_2_PREMOVE";
+  record.trade.portfolio = "V2_4_3_PREMOVE";
   record.trade.orderSubmissionAllowed = false;
   const options = {
     now, minimumScore: 55, strategySource: V2_EXECUTION_SOURCE,

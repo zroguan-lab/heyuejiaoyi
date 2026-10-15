@@ -1,4 +1,11 @@
 import { buildEntryReason, buildMarketEventId, STRATEGY_VERSION } from "./trade-reason.js";
+import {
+  createTradeExcursionState,
+  excursionFields,
+  finalizeTradeExcursion,
+  markTradeExcursionMilestone,
+  observeTradeExcursion,
+} from "./trade-excursion.js";
 
 const ACTIVE_STATUSES = new Set(["ENTRY_PENDING", "OPEN", "TP1_FILLED"]);
 
@@ -9,6 +16,39 @@ function round(value, digits = 8) {
 function addEvent(trade, type, at, details = {}) {
   trade.events.push({ type, at, ...details });
   trade.updatedAt = new Date(at).toISOString();
+}
+
+function syncExcursion(trade, state) {
+  trade.excursion = state;
+  Object.assign(trade, excursionFields(state));
+}
+
+function ensureExcursion(trade, openedAt = null) {
+  if (trade.excursion) return trade.excursion;
+  const resolvedOpenedAt = Number.isFinite(Number(openedAt))
+    ? Number(openedAt)
+    : new Date(trade.openedAt).getTime();
+  if (!Number.isFinite(resolvedOpenedAt)) return null;
+  const state = createTradeExcursionState({
+    direction: trade.direction,
+    entryPrice: trade.entryPrice,
+    stopLoss: trade.stopLoss,
+    openedAt: resolvedOpenedAt,
+  });
+  syncExcursion(trade, state);
+  return state;
+}
+
+function observeRange(trade, { low, high, at }) {
+  const state = ensureExcursion(trade);
+  if (!state) return;
+  syncExcursion(trade, observeTradeExcursion(state, { low, high, observedAt: at }));
+}
+
+function markMilestone(trade, type, at) {
+  const state = ensureExcursion(trade);
+  if (!state) return;
+  syncExcursion(trade, markTradeExcursionMilestone(state, type, at));
 }
 
 function exitFee(trade, price, fraction) {
@@ -27,10 +67,13 @@ function finalize(trade, { status = "CLOSED", reason, at, exitPrice }) {
   trade.costs.total = round(trade.costs.entryFee + trade.costs.exitFees + trade.costs.funding + trade.costs.slippage);
   trade.pnl.net = round(trade.pnl.gross - trade.costs.total);
   trade.pnl.netR = round(trade.pnl.net / trade.riskAmount, 4);
+  if (trade.excursion) syncExcursion(trade, finalizeTradeExcursion(trade.excursion, { closedAt: at, exitReason: reason }));
   addEvent(trade, status, at, { reason, exitPrice, netPnl: trade.pnl.net, netR: trade.pnl.netR });
 }
 
 function closeAtStop(trade, price, at, reason) {
+  observeRange(trade, { low: price, high: price, at });
+  markMilestone(trade, "STOP", at);
   const fraction = trade.remainingFraction;
   const sign = trade.direction === "LONG" ? 1 : -1;
   trade.pnl.gross += sign * (price - trade.entryPrice) * trade.quantity * fraction;
@@ -41,6 +84,8 @@ function closeAtStop(trade, price, at, reason) {
 }
 
 function fillTp1(trade, at) {
+  observeRange(trade, { low: trade.takeProfit1, high: trade.takeProfit1, at });
+  markMilestone(trade, "TP1", at);
   const fraction = 0.5;
   const sign = trade.direction === "LONG" ? 1 : -1;
   trade.pnl.gross += sign * (trade.takeProfit1 - trade.entryPrice) * trade.quantity * fraction;
@@ -53,6 +98,8 @@ function fillTp1(trade, at) {
 }
 
 function fillTp2(trade, at) {
+  observeRange(trade, { low: trade.takeProfit2, high: trade.takeProfit2, at });
+  markMilestone(trade, "TP2", at);
   const fraction = trade.remainingFraction;
   const sign = trade.direction === "LONG" ? 1 : -1;
   trade.pnl.gross += sign * (trade.takeProfit2 - trade.entryPrice) * trade.quantity * fraction;
@@ -67,6 +114,12 @@ function fillEntry(trade, candle, details = {}) {
   trade.openedAt = new Date(candle.openTime).toISOString();
   trade.costs.entryFee = round(trade.notional * trade.costs.feeRate);
   trade.costs.slippage = round(trade.notional * trade.costs.slippageRate);
+  syncExcursion(trade, createTradeExcursionState({
+    direction: trade.direction,
+    entryPrice: trade.entryPrice,
+    stopLoss: trade.stopLoss,
+    openedAt: candle.openTime,
+  }));
   addEvent(trade, "ENTRY_FILLED", candle.openTime, {
     price: trade.entryPrice,
     quantity: trade.quantity,
@@ -106,7 +159,7 @@ function tryHistoricalIocEntry(trade, candle) {
   return true;
 }
 
-function processOpenCandle(trade, candle) {
+function processOpenCandle(trade, candle, { entryFilledThisCandle = false } = {}) {
   const long = trade.direction === "LONG";
   const stopHit = long ? candle.low <= trade.currentStop : candle.high >= trade.currentStop;
   const tp2Hit = long ? candle.high >= trade.takeProfit2 : candle.low <= trade.takeProfit2;
@@ -120,7 +173,13 @@ function processOpenCandle(trade, candle) {
     if (tp1Hit) {
       fillTp1(trade, candle.closeTime);
       if (tp2Hit) fillTp2(trade, candle.closeTime);
+      else observeRange(trade, { low: trade.takeProfit1, high: trade.takeProfit1, at: candle.closeTime });
+      return;
     }
+    const passiveIntrabarFill = entryFilledThisCandle && trade.entryExecution?.timeInForce !== "IOC";
+    observeRange(trade, passiveIntrabarFill
+      ? { low: candle.close, high: candle.close, at: candle.closeTime }
+      : { low: candle.low, high: candle.high, at: candle.closeTime });
     return;
   }
 
@@ -130,6 +189,7 @@ function processOpenCandle(trade, candle) {
       return;
     }
     if (tp2Hit) fillTp2(trade, candle.closeTime);
+    else observeRange(trade, { low: candle.low, high: candle.high, at: candle.closeTime });
   }
 }
 
@@ -178,6 +238,8 @@ export function createSimulatedTrade(candidate, {
     lastFundingAt: createdAt,
     costs: { feeRate, slippageRate, entryFee: 0, exitFees: 0, funding: 0, slippage: 0, total: 0 },
     pnl: { gross: 0, net: 0, netR: 0 },
+    excursion: null,
+    ...excursionFields(null),
     events: [{ type: "ENTRY_PENDING", at: createdAt, entryPrice, expiresAt: candidate.order.expiresAt }],
   };
 }
@@ -225,6 +287,10 @@ export function createFixedRiskSimulatedTrade(candidate, {
       ? Number(candidate.preMove.directionScore)
       : null,
     candidateSources: [...(candidate.marketRadar?.opportunitySources ?? [])],
+    totalCostR: Number.isFinite(Number(candidate.shadowV2?.costs?.totalCostR))
+      ? Number(candidate.shadowV2.costs.totalCostR)
+      : null,
+    costs: candidate.shadowV2?.costs ? structuredClone(candidate.shadowV2.costs) : null,
   };
   trade.entryExecution = candidate.order?.style === "ACTIVE_DYNAMIC"
     ? {
@@ -259,7 +325,7 @@ export function createManualTrade(candidate, {
   if (![stopLoss, takeProfit1, takeProfit2].every(Number.isFinite)) throw new TypeError("对应信号缺少有效风控价格");
   const notional = round(fillPrice * quantity);
   const riskAmount = round(Math.abs(fillPrice - stopLoss) * quantity);
-  return {
+  const trade = {
     id,
     signalId: candidate.id,
     manual: true,
@@ -288,6 +354,8 @@ export function createManualTrade(candidate, {
     pnl: { gross: 0, net: 0, netR: 0 },
     events: [{ type: "MANUAL_ENTRY_RECORDED", at: createdAt, entryPrice: fillPrice, quantity }],
   };
+  syncExcursion(trade, createTradeExcursionState({ direction: trade.direction, entryPrice: fillPrice, stopLoss, openedAt: createdAt }));
+  return trade;
 }
 
 export function advanceTrade(inputTrade, candles) {
@@ -306,7 +374,7 @@ export function advanceTrade(inputTrade, candles) {
       }
       if (trade.entryExecution?.timeInForce === "IOC") {
         if (!tryHistoricalIocEntry(trade, candle)) break;
-        processOpenCandle(trade, candle);
+        processOpenCandle(trade, candle, { entryFilledThisCandle: true });
         trade.lastProcessedAt = candle.closeTime;
         continue;
       }
@@ -316,6 +384,9 @@ export function advanceTrade(inputTrade, candles) {
         continue;
       }
       fillEntry(trade, candle);
+      processOpenCandle(trade, candle, { entryFilledThisCandle: true });
+      trade.lastProcessedAt = candle.closeTime;
+      continue;
     }
 
     processOpenCandle(trade, candle);

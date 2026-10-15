@@ -528,6 +528,13 @@ test("完整闭环只提交一次入场单，成交后先建止损，再建止�
   assert.equal(run.result.exitRole, "takeProfit2");
   assert.match(run.result.exitReason, /平掉剩余仓位/);
   assert.deepEqual(run.result.trades.map((trade) => trade.orderId), ["1", "tp2-order"]);
+  assert.equal(run.performance.modelVersion, "TRADE_EXCURSION_R1");
+  assert.equal(run.performance.mfeR, 4);
+  assert.equal(run.performance.maeR, 0);
+  assert.equal(run.performance.mfePrice, 89_000);
+  assert.ok(run.performance.timeToTp2Ms > 0);
+  assert.equal(run.performance.maxFavorableExcursionBeforeExitR, 4);
+  assert.equal(run.performance.maxAdverseExcursionBeforeExitR, 0);
   assert.ok(client.calls.cancelAlgo.length >= 2);
 });
 

@@ -8,6 +8,13 @@ import {
   V23_LIVE_ADAPTER,
   v23DecisionFingerprint,
 } from "../src/domain/v2-3-strategy-engine.js";
+import {
+  runV24StrategyAdapter,
+  V24_HISTORICAL_ADAPTER,
+  V24_LIVE_ADAPTER,
+  V24_STRATEGY_CONTRACT_VERSION,
+  v24DecisionFingerprint,
+} from "../src/domain/v2-4-strategy-engine.js";
 import { MARKET_RADAR_VERSION } from "../src/domain/market-radar.js";
 import { analyzePreMove } from "../src/domain/pre-move-strategy.js";
 import { strategyConfig } from "./helpers.js";
@@ -153,6 +160,18 @@ test("同一V2.3快照经Demo与历史适配器产生完全一致的策略决策
   assert.deepEqual(live.decision, historical.decision);
   assert.equal(v23DecisionFingerprint(live), v23DecisionFingerprint(historical));
   assert.equal(live.decision.candidates[0].shadowV2.evaluatedAt, snapshot.decisionTime);
+});
+
+test("V2.4.3 Live与Historical Replay调用同一策略合同并产生相同决策", () => {
+  const config = fullConfig();
+  config.shadowV2.strategyVersion = "PRE_MOVE_1H_15M_5M_V2_4_3_BOUNDARY_FILTER";
+  const snapshot = decisionSnapshot();
+  const live = runV24StrategyAdapter({ adapter: V24_LIVE_ADAPTER, snapshot, config });
+  const historical = runV24StrategyAdapter({ adapter: V24_HISTORICAL_ADAPTER, snapshot, config });
+  assert.equal(live.contractVersion, V24_STRATEGY_CONTRACT_VERSION);
+  assert.equal(historical.contractVersion, V24_STRATEGY_CONTRACT_VERSION);
+  assert.deepEqual(live.decision, historical.decision);
+  assert.equal(v24DecisionFingerprint(live), v24DecisionFingerprint(historical));
 });
 
 test("统一V2.3引擎保留重构前实时信号与流动性补充行为", () => {

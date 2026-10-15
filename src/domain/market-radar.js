@@ -1,6 +1,7 @@
 export const MARKET_RADAR_VERSION = "MARKET_RADAR_R3_PREMOVE";
 export const MARKET_RADAR_SCHEMA_REVISION = 4;
 export const MARKET_RADAR_RETENTION_SOURCE = "RETAINED";
+export const MARKET_RADAR_BOUNDARY_SOURCE = "BOUNDARY_PRESSURE";
 
 const SOURCE_LABELS = Object.freeze({
   RANK_GAINER: "1小时领涨",
@@ -23,6 +24,17 @@ export function isRetentionOnlyOpportunity(sources = []) {
   return Array.isArray(sources)
     && sources.includes(MARKET_RADAR_RETENTION_SOURCE)
     && independentOpportunitySources(sources).length === 0;
+}
+
+export function independentTradeOpportunitySources(sources = []) {
+  return [...new Set(Array.isArray(sources) ? sources : [])]
+    .filter((source) => source !== MARKET_RADAR_RETENTION_SOURCE && source !== MARKET_RADAR_BOUNDARY_SOURCE);
+}
+
+export function isBoundaryPressureOnlyOpportunity(sources = []) {
+  return Array.isArray(sources)
+    && sources.includes(MARKET_RADAR_BOUNDARY_SOURCE)
+    && independentTradeOpportunitySources(sources).length === 0;
 }
 
 function clamp(value, minimum = 0, maximum = 1) {
@@ -455,7 +467,9 @@ export function marketRadarContext(snapshot, item) {
     liquidityRank: item.liquidityRank,
     opportunitySources,
     independentOpportunitySources: independentOpportunitySources(opportunitySources),
+    independentTradeOpportunitySources: independentTradeOpportunitySources(opportunitySources),
     retentionOnly: isRetentionOnlyOpportunity(opportunitySources),
+    boundaryPressureOnly: isBoundaryPressureOnlyOpportunity(opportunitySources),
     tags: [...(item.tags ?? [])],
     reasons: [...(item.reasons ?? [])],
   };

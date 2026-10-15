@@ -96,6 +96,49 @@ test("V2 影子组合独立持久化且不能污染 V1 selected", async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
+test("V2.4.3边界源反事实账保持未入选且不会进入Demo执行列表", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "boundary-counterfactual-store-"));
+  const store = new ResearchStore(path.join(directory, "research.sqlite"));
+  await store.initialize();
+  const candidate = {
+    id: "boundary-only-s1",
+    symbol: "ETHUSDT",
+    strategy: "PRE_BREAKOUT",
+    direction: "LONG",
+    status: "CANDIDATE",
+    triggerTime: 1_000,
+    shadowV2: {
+      strategyVersion: "PRE_MOVE_1H_15M_5M_V2_4_3_BOUNDARY_FILTER",
+      mode: "SHADOW_ONLY",
+      orderSubmissionAllowed: false,
+      score: 70,
+    },
+  };
+  const trade = {
+    signalId: candidate.id,
+    symbol: candidate.symbol,
+    status: "ENTRY_PENDING",
+    counterfactual: true,
+    orderSubmissionAllowed: false,
+  };
+  await store.saveCandidate(candidate);
+  await store.saveShadowDecision(candidate, {
+    selected: false,
+    rejectionReason: "V2_4_3_BOUNDARY_ONLY_NOT_TRADEABLE",
+    counterfactual: true,
+    trade,
+  });
+  trade.status = "OPEN";
+  await store.saveShadowTrade(trade);
+  const record = await store.getShadowSignal(candidate.id);
+  assert.equal(record.decision.selected, false);
+  assert.equal(record.decision.counterfactual, true);
+  assert.equal((await store.listActiveShadowTrades())[0].counterfactual, true);
+  assert.equal((await store.listExecutionSignals(V2_EXECUTION_SOURCE)).length, 0);
+  store.close();
+  await rm(directory, { recursive: true, force: true });
+});
+
 test("执行记录允许不同标的全量预留且只报告实际活动数量和保证金", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "execution-capacity-"));
   const store = new ResearchStore(path.join(directory, "research.sqlite"));

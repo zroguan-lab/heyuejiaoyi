@@ -2,10 +2,10 @@ import { EventEmitter } from "node:events";
 import { buildEntryReason } from "../domain/trade-reason.js";
 import {
   V1_EXECUTION_SOURCE,
-  V2_4_2_DEMO_PROMOTION_POLICY_VERSION,
-  V2_4_2_MAX_EXECUTION_COST_R,
+  V2_4_3_DEMO_PROMOTION_POLICY_VERSION,
+  V2_4_3_MAX_EXECUTION_COST_R,
   V2_4_MAX_EXECUTION_COST_R,
-  V2_4_2_SIGNAL_MODEL_VERSION,
+  V2_4_3_SIGNAL_MODEL_VERSION,
   V2_EXECUTION_SOURCE,
   assessV2DemoPromotion,
   assertExecutionStrategySource,
@@ -35,8 +35,8 @@ export function assessAutomaticExecutionSignal(record, {
   if (source === V2_EXECUTION_SOURCE) {
     const evaluation = record.evaluation ?? candidate.shadowV2;
     if (record.executionSource !== V2_EXECUTION_SOURCE) return { eligible: false, reason: "WRONG_EXECUTION_SOURCE" };
-    if (evaluation?.strategyVersion !== V2_4_2_SIGNAL_MODEL_VERSION) {
-      return { eligible: false, reason: "V2_4_2_SIGNAL_MODEL_REQUIRED" };
+    if (evaluation?.strategyVersion !== V2_4_3_SIGNAL_MODEL_VERSION) {
+      return { eligible: false, reason: "V2_4_3_SIGNAL_MODEL_REQUIRED" };
     }
     if (evaluation?.mode !== "SHADOW_ONLY" || evaluation?.orderSubmissionAllowed !== false || evaluation?.eligible !== true) {
       return { eligible: false, reason: "V2_NOT_ELIGIBLE" };
@@ -50,7 +50,7 @@ export function assessAutomaticExecutionSignal(record, {
         promotionDecision,
       };
     }
-    const validV2Portfolio = trade.portfolio === "V2_4_2_PREMOVE";
+    const validV2Portfolio = trade.portfolio === "V2_4_3_PREMOVE";
     if (!validV2Portfolio || trade.orderSubmissionAllowed !== false) {
       return { eligible: false, reason: "V2_PROMOTION_BOUNDARY_INVALID" };
     }
@@ -305,11 +305,11 @@ export class StrategyExecutionCoordinator extends EventEmitter {
       signalEvent: this.signalEvent,
       performanceEpochStartedAt: this.epochStartedAt,
       requiredRadarVersion: this.requiredRadarVersion,
-      positionPolicy: this.strategySource === V2_EXECUTION_SOURCE ? "V2_4_2_PREMOVE_RETAINED_FILTER_ALL_ELIGIBLE" : "ALL_ELIGIBLE",
+      positionPolicy: this.strategySource === V2_EXECUTION_SOURCE ? "V2_4_3_PREMOVE_BOUNDARY_FILTER_ALL_ELIGIBLE" : "ALL_ELIGIBLE",
       demoPromotionPolicy: this.strategySource === V2_EXECUTION_SOURCE ? {
-        version: V2_4_2_DEMO_PROMOTION_POLICY_VERSION,
+        version: V2_4_3_DEMO_PROMOTION_POLICY_VERSION,
         normalCostR: V2_4_MAX_EXECUTION_COST_R,
-        maximumCostR: V2_4_2_MAX_EXECUTION_COST_R,
+        maximumCostR: V2_4_3_MAX_EXECUTION_COST_R,
         highCostExplorationEnabled: true,
         researchCounterfactualPreserved: true,
       } : null,

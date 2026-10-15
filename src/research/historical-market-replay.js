@@ -5,10 +5,10 @@ import {
   marketRadarContext,
 } from "../domain/market-radar.js";
 import {
-  analyzeV23SignalSnapshot,
-  runV23StrategyAdapter,
-  V23_HISTORICAL_ADAPTER,
-} from "../domain/v2-3-strategy-engine.js";
+  analyzeV24SignalSnapshot,
+  runV24StrategyAdapter,
+  V24_HISTORICAL_ADAPTER,
+} from "../domain/v2-4-strategy-engine.js";
 import { HISTORICAL_DATA_TYPES } from "./historical-data-catalog.js";
 
 export const STRICT_POINT_IN_TIME_METADATA = "POINT_IN_TIME_STRICT";
@@ -314,7 +314,7 @@ export function runHistoricalV23Point({
   const inputs = radarPoint.snapshot.selectedSymbols
     .filter((symbol) => radarPoint.aggregates.has(symbol))
     .map((symbol) => strategyInput({ symbol, radarPoint, decisionTime, config, fundingBySymbol, equity }));
-  const preliminary = inputs.map((input) => analyzeV23SignalSnapshot(input, {
+  const preliminary = inputs.map((input) => analyzeV24SignalSnapshot(input, {
     strategyConfig: config.strategy,
     costsConfig: config.costs,
   }));
@@ -326,8 +326,8 @@ export function runHistoricalV23Point({
     analyses: preliminary,
     config: config.strategy,
   });
-  const decisions = inputs.map((input) => runV23StrategyAdapter({
-    adapter: V23_HISTORICAL_ADAPTER,
+  const decisions = inputs.map((input) => runV24StrategyAdapter({
+    adapter: V24_HISTORICAL_ADAPTER,
     snapshot: { ...input, marketRegime },
     config,
   }));

@@ -291,7 +291,10 @@ export class ResearchMonitor extends EventEmitter {
 
   async shadowEquity() {
     const records = await (this.store.listShadowSignals?.(10_000) ?? []);
-    return records.filter((record) => record?.evaluation?.strategyVersion === SHADOW_STRATEGY_VERSION).reduce((equity, record) => {
+    return records.filter((record) => (
+      record?.evaluation?.strategyVersion === SHADOW_STRATEGY_VERSION
+      && record?.decision?.selected === true
+    )).reduce((equity, record) => {
       const trade = record.trade;
       if (!trade || !["CLOSED", "EXPIRED"].includes(trade.status)) return equity;
       return equity + (Number(trade.pnl?.net) || 0);
@@ -328,12 +331,47 @@ export class ResearchMonitor extends EventEmitter {
     if (!this.config.shadowV2?.enabled || typeof this.store.saveShadowDecision !== "function") {
       return { selected: [], rejected: [], selectionMode: "DISABLED" };
     }
-    const active = await this.store.listActiveShadowTrades();
+    const active = (await this.store.listActiveShadowTrades()).filter((trade) => trade.counterfactual !== true);
     const allocation = selectProductionShadowCandidates(candidates, active, {
       minimumScore: this.config.shadowV2.explorationMinimumScore,
     });
+    const createResearchTrade = (candidate, {
+      portfolio = "V2_4_3_PREMOVE",
+      counterfactual = false,
+    } = {}) => {
+      const margin = candidate.shadowV2.fixedRiskPlan.targetMargin;
+      const trade = createSimulatedTrade(candidate, {
+        margin,
+        leverage: this.config.portfolio.leverage,
+        feeRate: this.config.costs.fallbackFeeRate,
+        slippageRate: candidate.order.style === "ACTIVE_DYNAMIC" ? this.config.costs.fallbackSlippageRate : 0,
+      });
+      trade.portfolio = portfolio;
+      trade.experimentTier = candidate.shadowV2.experimentTier;
+      trade.qualityObservations = [...(candidate.shadowV2.qualityObservations ?? [])];
+      trade.marketRadar = candidate.marketRadar ?? null;
+      trade.shadowRiskPercent = candidate.shadowV2.fixedRiskPlan.targetRiskPercent;
+      trade.estimatedCostR = Number.isFinite(Number(candidate.shadowV2?.costs?.totalCostR))
+        ? Number(candidate.shadowV2.costs.totalCostR)
+        : null;
+      trade.orderSubmissionAllowed = false;
+      trade.counterfactual = counterfactual;
+      return trade;
+    };
     for (const item of allocation.rejected) {
-      await this.store.saveShadowDecision(item.candidate, { selected: false, rejectionReason: item.reason });
+      const hardReasons = item.candidate.shadowV2?.hardRejectionReasons ?? [];
+      const boundaryFilterOnly = item.reason === "V2_4_3_BOUNDARY_ONLY_NOT_TRADEABLE"
+        && hardReasons.length === 1
+        && Number(item.candidate.shadowV2?.score) >= Number(this.config.shadowV2.explorationMinimumScore);
+      const trade = boundaryFilterOnly
+        ? createResearchTrade(item.candidate, { portfolio: "V2_4_3_BOUNDARY_COUNTERFACTUAL", counterfactual: true })
+        : null;
+      await this.store.saveShadowDecision(item.candidate, {
+        selected: false,
+        rejectionReason: item.reason,
+        trade,
+        counterfactual: Boolean(trade),
+      });
     }
     const selected = [];
     for (const candidate of allocation.selected) {
@@ -353,25 +391,13 @@ export class ResearchMonitor extends EventEmitter {
         ...candidate,
         strategyVersion: SHADOW_STRATEGY_VERSION,
         experimentTier: candidate.shadowV2.experimentTier,
-        entryReason: `${candidate.symbol}因${sources}进入爆发前候选，波动收缩比${Number(candidate.preMove?.compressionRatio ?? 0).toFixed(2)}、距结构边界${Number(candidate.preMove?.boundaryDistanceAtr ?? 0).toFixed(2)}ATR、爆发评分${candidate.preMove?.explosionScore ?? "-"}分、方向评分${candidate.preMove?.directionScore ?? "-"}分，V2.4.2${tierLabel}总评分${candidate.shadowV2.score}分，因此进入后台反事实研究账本。`,
+        entryReason: `${candidate.symbol}因${sources}进入爆发前候选，波动收缩比${Number(candidate.preMove?.compressionRatio ?? 0).toFixed(2)}、距结构边界${Number(candidate.preMove?.boundaryDistanceAtr ?? 0).toFixed(2)}ATR、爆发评分${candidate.preMove?.explosionScore ?? "-"}分、方向评分${candidate.preMove?.directionScore ?? "-"}分，V2.4.3${tierLabel}总评分${candidate.shadowV2.score}分，因此进入后台反事实研究账本。`,
       };
-      const margin = candidate.shadowV2.fixedRiskPlan.targetMargin;
-      const trade = createSimulatedTrade(shadowCandidate, {
-        margin,
-        leverage: this.config.portfolio.leverage,
-        feeRate: this.config.costs.fallbackFeeRate,
-        slippageRate: candidate.order.style === "ACTIVE_DYNAMIC" ? this.config.costs.fallbackSlippageRate : 0,
-      });
-      trade.portfolio = "V2_4_2_PREMOVE";
-      trade.experimentTier = candidate.shadowV2.experimentTier;
-      trade.qualityObservations = [...(candidate.shadowV2.qualityObservations ?? [])];
-      trade.marketRadar = radar ?? null;
-      trade.shadowRiskPercent = candidate.shadowV2.fixedRiskPlan.targetRiskPercent;
-      trade.orderSubmissionAllowed = false;
+      const trade = createResearchTrade(shadowCandidate);
       await this.store.saveShadowDecision(shadowCandidate, { selected: true, trade });
       selected.push(trade);
       this.emit("shadowSignal", { candidate: shadowCandidate, trade });
-      this.logger.info(`[v2.4.2-${candidate.shadowV2.experimentTier.toLowerCase()}] ${candidate.symbol} ${candidate.strategy} ${candidate.direction} score=${candidate.shadowV2.score}`);
+      this.logger.info(`[v2.4.3-${candidate.shadowV2.experimentTier.toLowerCase()}] ${candidate.symbol} ${candidate.strategy} ${candidate.direction} score=${candidate.shadowV2.score}`);
     }
     return { ...allocation, selected };
   }
@@ -545,7 +571,7 @@ export class ResearchMonitor extends EventEmitter {
       universeSize: this.symbols.length,
       intervals: this.config.intervals,
       pollSeconds: this.config.pollMs / 1000,
-      selectionMode: this.config.execution?.strategySource === "V2_PRODUCTION" ? "V2_4_2_PREMOVE_RETAINED_FILTER_ALL_ELIGIBLE" : "ALL_ELIGIBLE",
+      selectionMode: this.config.execution?.strategySource === "V2_PRODUCTION" ? "V2_4_3_PREMOVE_BOUNDARY_FILTER_ALL_ELIGIBLE" : "ALL_ELIGIBLE",
       minimumScore: this.config.execution?.strategySource === "V2_PRODUCTION"
         ? this.config.shadowV2?.minimumScore
         : this.config.strategy.minConfidence,

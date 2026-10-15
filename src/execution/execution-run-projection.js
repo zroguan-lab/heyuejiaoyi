@@ -92,6 +92,8 @@ export function projectExecutionRun(run, signalRecord = null) {
   const netR = netPnl !== null && riskAmount !== null && riskAmount > 0 ? netPnl / riskAmount : null;
   const mfePnl = finiteNumber(run.performance?.mfePnl);
   const maePnl = finiteNumber(run.performance?.maePnl);
+  const projectedMfeR = finiteNumber(run.performance?.mfeR);
+  const projectedMaeR = finiteNumber(run.performance?.maeR);
   const entryReason = run.plan.orderReasons?.entry
     ?? (Array.isArray(candidate?.reasons) ? candidate.reasons[0] ?? null : null);
 
@@ -170,8 +172,25 @@ export function projectExecutionRun(run, signalRecord = null) {
     netPnl,
     mfePnl,
     maePnl,
-    mfeR: mfePnl !== null && riskAmount !== null && riskAmount > 0 ? mfePnl / riskAmount : finiteNumber(run.performance?.mfeR),
-    maeR: maePnl !== null && riskAmount !== null && riskAmount > 0 ? maePnl / riskAmount : finiteNumber(run.performance?.maeR),
+    mfeR: mfePnl !== null && riskAmount !== null && riskAmount > 0
+      ? Math.max(0, mfePnl / riskAmount)
+      : projectedMfeR !== null ? Math.max(0, projectedMfeR) : null,
+    maeR: maePnl !== null && riskAmount !== null && riskAmount > 0
+      ? Math.abs(maePnl / riskAmount)
+      : projectedMaeR !== null ? Math.abs(projectedMaeR) : null,
+    mfePrice: finiteNumber(run.performance?.mfePrice),
+    maePrice: finiteNumber(run.performance?.maePrice),
+    timeToMfeMs: finiteNumber(run.performance?.timeToMfeMs),
+    timeToMaeMs: finiteNumber(run.performance?.timeToMaeMs),
+    timeToTp1Ms: finiteNumber(run.performance?.timeToTp1Ms),
+    timeToTp2Ms: finiteNumber(run.performance?.timeToTp2Ms),
+    timeToStopMs: finiteNumber(run.performance?.timeToStopMs),
+    mfeBeforeStopR: finiteNumber(run.performance?.mfeBeforeStopR),
+    maeBeforeTp1R: finiteNumber(run.performance?.maeBeforeTp1R),
+    maxFavorableExcursionBeforeExitR: finiteNumber(run.performance?.maxFavorableExcursionBeforeExitR),
+    maxAdverseExcursionBeforeExitR: finiteNumber(run.performance?.maxAdverseExcursionBeforeExitR),
+    barsHeld5m: finiteNumber(run.performance?.barsHeld5m),
+    minutesHeld: finiteNumber(run.performance?.minutesHeld),
     excursionSamples: finiteNumber(run.performance?.samples),
     entryOrderId: run.entryOrder?.orderId ?? null,
     entryOrderStatus: run.entryOrder?.status ?? null,

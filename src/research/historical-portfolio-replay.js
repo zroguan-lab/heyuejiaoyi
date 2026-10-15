@@ -4,6 +4,7 @@ import {
   isActiveTrade,
 } from "../domain/trade-lifecycle.js";
 import { selectProductionShadowCandidates } from "../domain/shadow-v2.js";
+import { buildExcursionAttribution, buildOpportunitySourceAttribution } from "../presentation/research-attribution.js";
 import {
   runHistoricalV23Point,
   STRICT_POINT_IN_TIME_METADATA,
@@ -214,6 +215,7 @@ export function runHistoricalV23PortfolioReplay({
 
   const startingEquity = Number(config.portfolio?.startingEquity ?? 500);
   const trades = [];
+  const counterfactualTrades = [];
   const rejected = [];
   const decisions = [];
   const equityCurve = [];
@@ -223,6 +225,11 @@ export function runHistoricalV23PortfolioReplay({
   for (const time of times) {
     for (let index = 0; index < trades.length; index += 1) {
       if (isActiveTrade(trades[index])) trades[index] = advanceTo(trades[index], minutes, fundingBySymbol, time);
+    }
+    for (let index = 0; index < counterfactualTrades.length; index += 1) {
+      if (isActiveTrade(counterfactualTrades[index])) {
+        counterfactualTrades[index] = advanceTo(counterfactualTrades[index], minutes, fundingBySymbol, time);
+      }
     }
     const before = accountSnapshot(trades, minutes, time, startingEquity);
     const point = decisionRunner({
@@ -249,6 +256,22 @@ export function runHistoricalV23PortfolioReplay({
       minimumScore: Number(config.shadowV2?.explorationMinimumScore ?? config.shadowV2?.minimumScore ?? 55),
     });
     rejected.push(...allocation.rejected.map((item) => rejection(item.candidate, item.reason, time)));
+    for (const item of allocation.rejected) {
+      const hardReasons = item.candidate.shadowV2?.hardRejectionReasons ?? [];
+      if (item.reason !== "V2_4_3_BOUNDARY_ONLY_NOT_TRADEABLE"
+        || hardReasons.length !== 1
+        || Number(item.candidate.shadowV2?.score) < Number(config.shadowV2?.explorationMinimumScore ?? 55)) continue;
+      const counterfactual = createFixedRiskSimulatedTrade(item.candidate, {
+        feeRate: Number(config.costs?.fallbackFeeRate ?? 0.0005),
+        slippageRate: item.candidate.order?.style === "ACTIVE_DYNAMIC"
+          ? Number(config.costs?.fallbackSlippageRate ?? 0.0002)
+          : 0,
+        maxAdverseSlippageBps: Number(config.costs?.activeLimitMaxBps ?? 10),
+      });
+      counterfactual.counterfactual = true;
+      counterfactual.portfolio = "V2_4_3_BOUNDARY_COUNTERFACTUAL";
+      counterfactualTrades.push(counterfactual);
+    }
 
     let availableMargin = before.equity - before.reservedMargin;
     const selectedIds = [];
@@ -287,10 +310,15 @@ export function runHistoricalV23PortfolioReplay({
   for (let index = 0; index < trades.length; index += 1) {
     if (isActiveTrade(trades[index])) trades[index] = advanceTo(trades[index], minutes, fundingBySymbol, replayEnd);
   }
+  for (let index = 0; index < counterfactualTrades.length; index += 1) {
+    if (isActiveTrade(counterfactualTrades[index])) {
+      counterfactualTrades[index] = advanceTo(counterfactualTrades[index], minutes, fundingBySymbol, replayEnd);
+    }
+  }
   if (replayEnd > times.at(-1)) equityCurve.push(accountSnapshot(trades, minutes, replayEnd, startingEquity));
   const pointInTimeEligible = decisions.every((item) => item.promotionEligible);
   return {
-    modelVersion: "V2_3_HISTORICAL_PORTFOLIO_REPLAY_M4_R1",
+    modelVersion: "V2_4_3_HISTORICAL_PORTFOLIO_REPLAY_R1",
     assumptions: {
       startingEquity,
       positionSizing: "FIXED_RISK_PERCENT_OF_POINT_IN_TIME_EQUITY",
@@ -308,7 +336,16 @@ export function runHistoricalV23PortfolioReplay({
       "HISTORICAL_ORDERBOOK_AND_QUEUE_POSITION_UNAVAILABLE",
     ],
     metrics: summarize(trades, rejected, equityCurve, startingEquity),
+    researchAttribution: {
+      excursion: buildExcursionAttribution(trades),
+      opportunitySources: buildOpportunitySourceAttribution(trades),
+      counterfactualBoundaryOnly: {
+        excursion: buildExcursionAttribution(counterfactualTrades),
+        opportunitySources: buildOpportunitySourceAttribution(counterfactualTrades),
+      },
+    },
     trades,
+    counterfactualTrades,
     rejected,
     decisions,
     equityCurve,

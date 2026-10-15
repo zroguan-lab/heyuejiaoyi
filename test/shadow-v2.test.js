@@ -195,7 +195,7 @@ test("V2.2排行榜方向与策略方向冲突时硬拒绝，不能把领跌币�
   assert.equal(evaluation.hardRejectionReasons.includes("MOVER_DIRECTION_CONFLICT"), true);
 });
 
-test("V2.4.2在做多确认完整且存在独立机会来源时允许合格Pre-Move进入探索", () => {
+test("V2.4.3在做多确认完整且存在独立机会来源时允许合格Pre-Move进入探索", () => {
   const preMoveCandidate = {
     ...candidate,
     strategy: "PRE_BREAKOUT",
@@ -238,9 +238,56 @@ test("V2.4.2在做多确认完整且存在独立机会来源时允许合格Pre-M
     config: { ...config, radarRequired: true, radarModelVersion: "MARKET_RADAR_R3_PREMOVE" },
   });
   assert.equal(evaluation.eligible, true);
-  assert.equal(evaluation.scoreModel, "PRE_MOVE_V2_4_2_RETAINED_FILTER");
+  assert.equal(evaluation.scoreModel, "PRE_MOVE_V2_4_3_BOUNDARY_FILTER");
   assert.deepEqual(evaluation.rawPreMoveScores, { explosion: 82, direction: 76 });
   assert.equal(evaluation.hardRejectionReasons.length, 0);
+});
+
+test("V2.4.3禁止BOUNDARY_PRESSURE-only独立交易但允许与真实独立来源组合", () => {
+  const base = {
+    ...candidate,
+    strategy: "PRE_BREAKOUT",
+    preMove: {
+      explosionScore: 82,
+      directionScore: 76,
+      compressionRatio: 0.72,
+      volumeAcceleration: 1.35,
+      directionalPressure: 0.7,
+      triggerConfirmation: {
+        latestDirectionalBodyAtr: 0.12,
+        latestDirectionalCloseChangeAtr: 0.08,
+        latestCloseLocation: 0.72,
+      },
+      alreadyBroken: false,
+    },
+    marketRadar: {
+      version: "MARKET_RADAR_R3_PREMOVE",
+      selected: true,
+      radarTier: "CORE",
+      radarScore: 84,
+      bias: "LONG",
+      marketDirection: "MIXED",
+      volumeRatio15m: 1.25,
+      overextensionRisk: "LOW",
+      opportunitySources: ["RETAINED", "BOUNDARY_PRESSURE"],
+    },
+  };
+  const evaluate = (item) => evaluateShadowCandidate(item, {
+    marketRegime: { direction: "LONG", breadthAgrees: true },
+    costEstimate: { totalCostR: 0.1, fundingCostR: 0, fundingDataAvailable: true },
+    fixedRiskPlan: buildFixedRiskShadowPlan(item, { equity: 500, targetRiskPercent: 0.5, leverage: 10 }),
+    config: { ...config, radarRequired: true, radarModelVersion: "MARKET_RADAR_R3_PREMOVE" },
+  });
+  const boundaryOnly = evaluate(base);
+  assert.equal(boundaryOnly.eligible, false);
+  assert.deepEqual(boundaryOnly.hardRejectionReasons, ["V2_4_3_BOUNDARY_ONLY_NOT_TRADEABLE"]);
+
+  const combined = evaluate({
+    ...base,
+    marketRadar: { ...base.marketRadar, opportunitySources: ["BOUNDARY_PRESSURE", "VOLATILITY_COMPRESSION"] },
+  });
+  assert.equal(combined.eligible, true);
+  assert.equal(combined.hardRejectionReasons.includes("V2_4_3_BOUNDARY_ONLY_NOT_TRADEABLE"), false);
 });
 
 test("V2.4.2仅RETAINED来源保留研究上下文但不得获得交易资格", () => {
