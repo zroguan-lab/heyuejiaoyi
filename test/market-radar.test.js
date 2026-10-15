@@ -129,3 +129,46 @@ test("R3记录排名速度并在最短观察期内保留已选标的", () => {
   assert.equal(context.snapshotId, second.snapshotId);
   assert.equal(context.rankVelocity, rising.rankVelocity);
 });
+
+test("R3把仅靠RETAINED保留的标的标记为不可独立交易来源", () => {
+  const firstAt = 3_000_000;
+  const markets = [
+    market("BTCUSDT", 1_000_000, 1),
+    market("ETHUSDT", 900_000, 0.8),
+    market("SOLUSDT", 800_000, 6),
+  ];
+  const first = buildMarketRadarSnapshot(markets, {
+    now: firstAt,
+    discoverySize: 3,
+    deepScanSize: 3,
+    gainerCount: 1,
+    loserCount: 0,
+    rankVelocityCount: 0,
+    volumeShockCount: 0,
+    compressionCount: 0,
+    boundaryPressureCount: 0,
+    earlyAccelerationCount: 0,
+    coreSymbols: [],
+  });
+  const retained = buildMarketRadarSnapshot(markets.map((item) => ({ ...item, return1h: item.symbol === "SOLUSDT" ? 0.2 : item.return1h })), {
+    previousSnapshot: first,
+    now: firstAt + 5 * 60_000,
+    discoverySize: 3,
+    deepScanSize: 3,
+    minimumHoldMs: 30 * 60_000,
+    gainerCount: 0,
+    loserCount: 0,
+    rankVelocityCount: 0,
+    volumeShockCount: 0,
+    compressionCount: 0,
+    boundaryPressureCount: 0,
+    earlyAccelerationCount: 0,
+    coreSymbols: [],
+  });
+  const item = retained.items.find((row) => row.symbol === "SOLUSDT");
+  const context = marketRadarContext(retained, item);
+  assert.deepEqual(context.opportunitySources, ["RETAINED"]);
+  assert.deepEqual(context.independentOpportunitySources, []);
+  assert.equal(context.retentionOnly, true);
+  assert.equal(context.selected, true);
+});

@@ -353,7 +353,7 @@ export class ResearchMonitor extends EventEmitter {
         ...candidate,
         strategyVersion: SHADOW_STRATEGY_VERSION,
         experimentTier: candidate.shadowV2.experimentTier,
-        entryReason: `${candidate.symbol}因${sources}进入爆发前候选，波动收缩比${Number(candidate.preMove?.compressionRatio ?? 0).toFixed(2)}、距结构边界${Number(candidate.preMove?.boundaryDistanceAtr ?? 0).toFixed(2)}ATR、爆发评分${candidate.preMove?.explosionScore ?? "-"}分、方向评分${candidate.preMove?.directionScore ?? "-"}分，V2.4.1${tierLabel}总评分${candidate.shadowV2.score}分，因此进入后台反事实研究账本。`,
+        entryReason: `${candidate.symbol}因${sources}进入爆发前候选，波动收缩比${Number(candidate.preMove?.compressionRatio ?? 0).toFixed(2)}、距结构边界${Number(candidate.preMove?.boundaryDistanceAtr ?? 0).toFixed(2)}ATR、爆发评分${candidate.preMove?.explosionScore ?? "-"}分、方向评分${candidate.preMove?.directionScore ?? "-"}分，V2.4.2${tierLabel}总评分${candidate.shadowV2.score}分，因此进入后台反事实研究账本。`,
       };
       const margin = candidate.shadowV2.fixedRiskPlan.targetMargin;
       const trade = createSimulatedTrade(shadowCandidate, {
@@ -362,7 +362,7 @@ export class ResearchMonitor extends EventEmitter {
         feeRate: this.config.costs.fallbackFeeRate,
         slippageRate: candidate.order.style === "ACTIVE_DYNAMIC" ? this.config.costs.fallbackSlippageRate : 0,
       });
-      trade.portfolio = "V2_4_1_PREMOVE";
+      trade.portfolio = "V2_4_2_PREMOVE";
       trade.experimentTier = candidate.shadowV2.experimentTier;
       trade.qualityObservations = [...(candidate.shadowV2.qualityObservations ?? [])];
       trade.marketRadar = radar ?? null;
@@ -371,7 +371,7 @@ export class ResearchMonitor extends EventEmitter {
       await this.store.saveShadowDecision(shadowCandidate, { selected: true, trade });
       selected.push(trade);
       this.emit("shadowSignal", { candidate: shadowCandidate, trade });
-      this.logger.info(`[v2.4.1-${candidate.shadowV2.experimentTier.toLowerCase()}] ${candidate.symbol} ${candidate.strategy} ${candidate.direction} score=${candidate.shadowV2.score}`);
+      this.logger.info(`[v2.4.2-${candidate.shadowV2.experimentTier.toLowerCase()}] ${candidate.symbol} ${candidate.strategy} ${candidate.direction} score=${candidate.shadowV2.score}`);
     }
     return { ...allocation, selected };
   }
@@ -545,7 +545,7 @@ export class ResearchMonitor extends EventEmitter {
       universeSize: this.symbols.length,
       intervals: this.config.intervals,
       pollSeconds: this.config.pollMs / 1000,
-      selectionMode: this.config.execution?.strategySource === "V2_PRODUCTION" ? "V2_4_1_PREMOVE_LONG_CONFIRMED_ALL_ELIGIBLE" : "ALL_ELIGIBLE",
+      selectionMode: this.config.execution?.strategySource === "V2_PRODUCTION" ? "V2_4_2_PREMOVE_RETAINED_FILTER_ALL_ELIGIBLE" : "ALL_ELIGIBLE",
       minimumScore: this.config.execution?.strategySource === "V2_PRODUCTION"
         ? this.config.shadowV2?.minimumScore
         : this.config.strategy.minConfidence,

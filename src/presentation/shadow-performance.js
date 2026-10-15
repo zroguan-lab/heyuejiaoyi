@@ -29,7 +29,7 @@ export function buildShadowPerformance(records = [], { startingEquity = 500 } = 
     maxDrawdown: maxDrawdownPercent < 10,
   };
   return {
-    portfolio: "V2_4_1_PREMOVE",
+    portfolio: "V2_4_2_PREMOVE",
     sampleType: "FORWARD_DEMO_RESEARCH",
     startingEquity,
     currentEquity: round(startingEquity + totalNetPnl, 6),

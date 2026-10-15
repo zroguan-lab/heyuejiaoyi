@@ -7,11 +7,15 @@ export const V2_4_DEMO_STRATEGY_VERSION = "PRE_MOVE_1H_15M_5M_V2_4_COST_GATED_DE
 export const V2_4_SIGNAL_MODEL_VERSION = "PRE_MOVE_1H_15M_5M_V2_4";
 export const V2_4_1_DEMO_STRATEGY_VERSION = "PRE_MOVE_1H_15M_5M_V2_4_1_TIERED_COST_DEMO_20261009";
 export const V2_4_1_SIGNAL_MODEL_VERSION = "PRE_MOVE_1H_15M_5M_V2_4_1_LONG_CONFIRM";
-export const V2_DEMO_STRATEGY_VERSION = V2_4_1_DEMO_STRATEGY_VERSION;
+export const V2_4_2_DEMO_STRATEGY_VERSION = "PRE_MOVE_1H_15M_5M_V2_4_2_RETAINED_FILTER_DEMO_20261015";
+export const V2_4_2_SIGNAL_MODEL_VERSION = "PRE_MOVE_1H_15M_5M_V2_4_2_RETAINED_FILTER";
+export const V2_DEMO_STRATEGY_VERSION = V2_4_2_DEMO_STRATEGY_VERSION;
 export const V2_4_DEMO_PROMOTION_POLICY_VERSION = "V2_4_COST_GATE_R1";
 export const V2_4_1_DEMO_PROMOTION_POLICY_VERSION = "V2_4_1_TIERED_COST_GATE_R2";
+export const V2_4_2_DEMO_PROMOTION_POLICY_VERSION = "V2_4_2_RETAINED_FILTER_R1";
 export const V2_4_MAX_EXECUTION_COST_R = 0.2;
 export const V2_4_1_MAX_EXECUTION_COST_R = 0.35;
+export const V2_4_2_MAX_EXECUTION_COST_R = V2_4_1_MAX_EXECUTION_COST_R;
 export const V2_4_1_NORMAL_COST_COHORT = "NORMAL_COST";
 export const V2_4_1_HIGH_COST_COHORT = "HIGH_COST_EXPLORATION";
 export const PERFORMANCE_EPOCH_METADATA_KEY = "active_strategy_performance_epoch";
@@ -24,6 +28,8 @@ function demoVersionForSignal(signalVersion) {
   if (signalVersion.includes("V2_2")) return V2_2_DEMO_STRATEGY_VERSION;
   if (signalVersion === "PRE_MOVE_1H_15M_5M_V2_3") return V2_3_DEMO_STRATEGY_VERSION;
   if (signalVersion === V2_4_SIGNAL_MODEL_VERSION) return V2_4_DEMO_STRATEGY_VERSION;
+  if (signalVersion === V2_4_1_SIGNAL_MODEL_VERSION) return V2_4_1_DEMO_STRATEGY_VERSION;
+  if (signalVersion === V2_4_2_SIGNAL_MODEL_VERSION) return V2_4_2_DEMO_STRATEGY_VERSION;
   return V2_DEMO_STRATEGY_VERSION;
 }
 
@@ -40,7 +46,7 @@ export function assessV2DemoPromotion(evaluation, {
 } = {}) {
   const signalVersion = String(evaluation?.strategyVersion ?? "");
   const resolvedDemoStrategyVersion = demoStrategyVersion || demoVersionForSignal(signalVersion);
-  if (![V2_4_DEMO_STRATEGY_VERSION, V2_4_1_DEMO_STRATEGY_VERSION].includes(resolvedDemoStrategyVersion)) {
+  if (![V2_4_DEMO_STRATEGY_VERSION, V2_4_1_DEMO_STRATEGY_VERSION, V2_4_2_DEMO_STRATEGY_VERSION].includes(resolvedDemoStrategyVersion)) {
     return Object.freeze({
       eligible: true,
       policyVersion: "LEGACY_DEMO_PROMOTION",
@@ -52,12 +58,16 @@ export function assessV2DemoPromotion(evaluation, {
     });
   }
   const totalCostR = Number(evaluation?.costs?.totalCostR);
+  const currentV2_4_2 = resolvedDemoStrategyVersion === V2_4_2_DEMO_STRATEGY_VERSION;
   const currentV2_4_1 = resolvedDemoStrategyVersion === V2_4_1_DEMO_STRATEGY_VERSION;
-  const policyPrefix = currentV2_4_1 ? "V2_4_1" : "V2_4";
-  const maximumCostR = currentV2_4_1 ? V2_4_1_MAX_EXECUTION_COST_R : V2_4_MAX_EXECUTION_COST_R;
+  const tieredCostPolicy = currentV2_4_1 || currentV2_4_2;
+  const policyPrefix = currentV2_4_2 ? "V2_4_2" : currentV2_4_1 ? "V2_4_1" : "V2_4";
+  const maximumCostR = currentV2_4_2
+    ? V2_4_2_MAX_EXECUTION_COST_R
+    : currentV2_4_1 ? V2_4_1_MAX_EXECUTION_COST_R : V2_4_MAX_EXECUTION_COST_R;
   const rejectionReasons = [];
   if (!Number.isFinite(totalCostR)) rejectionReasons.push(`${policyPrefix}_EXECUTION_COST_R_UNAVAILABLE`);
-  else if (totalCostR > maximumCostR) rejectionReasons.push(`${policyPrefix}_EXECUTION_COST_R_ABOVE_${currentV2_4_1 ? "0_35" : "0_20"}`);
+  else if (totalCostR > maximumCostR) rejectionReasons.push(`${policyPrefix}_EXECUTION_COST_R_ABOVE_${tieredCostPolicy ? "0_35" : "0_20"}`);
   const costCohort = !Number.isFinite(totalCostR) || totalCostR > maximumCostR
     ? null
     : totalCostR <= V2_4_MAX_EXECUTION_COST_R
@@ -65,11 +75,12 @@ export function assessV2DemoPromotion(evaluation, {
       : V2_4_1_HIGH_COST_COHORT;
   return Object.freeze({
     eligible: rejectionReasons.length === 0,
-    policyVersion: currentV2_4_1
-      ? V2_4_1_DEMO_PROMOTION_POLICY_VERSION
+    policyVersion: currentV2_4_2
+      ? V2_4_2_DEMO_PROMOTION_POLICY_VERSION
+      : currentV2_4_1 ? V2_4_1_DEMO_PROMOTION_POLICY_VERSION
       : V2_4_DEMO_PROMOTION_POLICY_VERSION,
     totalCostR: Number.isFinite(totalCostR) ? totalCostR : null,
-    normalCostR: currentV2_4_1 ? V2_4_MAX_EXECUTION_COST_R : null,
+    normalCostR: tieredCostPolicy ? V2_4_MAX_EXECUTION_COST_R : null,
     maximumCostR,
     costCohort,
     rejectionReasons,
@@ -84,13 +95,13 @@ export function projectV2ExecutionSignal(record) {
   const demoStrategyVersion = demoVersionForSignal(signalVersion);
   const promotionDecision = assessV2DemoPromotion(evaluation, { demoStrategyVersion });
   const researchReason = trade?.entryReason
-    ?? `V2.4.1爆发前识别${evaluation?.experimentTier === "CORE" ? "核心层" : "探索层"}信号进入研究账本。`;
+    ?? `V2.4.2爆发前识别${evaluation?.experimentTier === "CORE" ? "核心层" : "探索层"}信号进入研究账本。`;
   const promotionDescription = promotionDecision.costCohort === V2_4_1_NORMAL_COST_COHORT
     ? "归属普通成本组"
     : promotionDecision.costCohort === V2_4_1_HIGH_COST_COHORT
       ? "归属高成本探索组"
       : "未通过当前Demo成本准入";
-  const entryReason = [V2_4_DEMO_STRATEGY_VERSION, V2_4_1_DEMO_STRATEGY_VERSION].includes(demoStrategyVersion)
+  const entryReason = [V2_4_DEMO_STRATEGY_VERSION, V2_4_1_DEMO_STRATEGY_VERSION, V2_4_2_DEMO_STRATEGY_VERSION].includes(demoStrategyVersion)
     ? `${String(researchReason).replace(/[。；;\s]+$/u, "")}；预估总成本${promotionDecision.totalCostR?.toFixed(4) ?? "不可用"}R，${promotionDescription}${promotionDecision.eligible ? "并通过Demo准入" : ""}。`
     : researchReason;
   return {
@@ -141,8 +152,9 @@ export function buildPerformanceEpoch({
   if (!Number.isFinite(timestamp) || timestamp <= 0) throw new TypeError("绩效纪元时间无效");
   const version = String(strategyVersion ?? "").trim();
   if (!version) throw new TypeError("绩效纪元策略版本不能为空");
-  const release = version === V2_4_1_DEMO_STRATEGY_VERSION
-    ? "V2.4.1"
+  const release = version === V2_4_2_DEMO_STRATEGY_VERSION
+    ? "V2.4.2"
+    : version === V2_4_1_DEMO_STRATEGY_VERSION ? "V2.4.1"
     : version === V2_4_DEMO_STRATEGY_VERSION ? "V2.4" : "V2.3";
   return Object.freeze({
     id: `${release}-${new Date(timestamp).toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)}`,
@@ -153,8 +165,10 @@ export function buildPerformanceEpoch({
     startedAt: timestamp,
     startingEquity: Number(startingEquity),
     previousEpochId: previousEpoch?.id ?? null,
-    reason: release === "V2.4.1"
-      ? "V2.4.1分层成本执行；保留信号、方向、出场与仓位逻辑，独立重新计算Demo绩效"
+    reason: release === "V2.4.2"
+      ? "V2.4.2单变量实验：仅RETAINED来源不再获得交易资格；评分、方向、出场、成本与仓位逻辑保持V2.4.1不变"
+      : release === "V2.4.1"
+        ? "V2.4.1分层成本执行；保留信号、方向、出场与仓位逻辑，独立重新计算Demo绩效"
       : release === "V2.4"
         ? "V2.4统一策略切换；爆发前信号与0.20R成本门控共同归属V2.4"
         : "V2.3 Pre-Move爆发前策略切换，独立重新计算Demo绩效",

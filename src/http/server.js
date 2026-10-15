@@ -220,7 +220,7 @@ export function createDashboardServer({ monitor, accountMonitor = null, executio
           mode: autoExecutionEnabled ? "DEMO_AUTO_EXECUTION" : "RESEARCH_SIGNAL_ONLY",
           marketEnvironment: config.marketEnvironment,
           disclaimer: autoExecutionEnabled
-            ? `仅在 Binance Demo 执行新产生且仍有效的 ${v2Active ? "V2.4.1 Pre-Move做多确认与分层成本准入" : "V1"} 组合信号；不会连接真实资金账户。`
+            ? `仅在 Binance Demo 执行新产生且仍有效的 ${v2Active ? "V2.4.2 Pre-Move保留源过滤与分层成本准入" : "V1"} 组合信号；不会连接真实资金账户。`
             : "仅供研究与风险监控；策略信号不会触发自动下单。",
           monitor: monitor.snapshot(),
           execution,

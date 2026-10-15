@@ -195,7 +195,7 @@ test("V2.2排行榜方向与策略方向冲突时硬拒绝，不能把领跌币�
   assert.equal(evaluation.hardRejectionReasons.includes("MOVER_DIRECTION_CONFLICT"), true);
 });
 
-test("V2.4.1在做多确认完整时允许合格Pre-Move进入探索", () => {
+test("V2.4.2在做多确认完整且存在独立机会来源时允许合格Pre-Move进入探索", () => {
   const preMoveCandidate = {
     ...candidate,
     strategy: "PRE_BREAKOUT",
@@ -221,6 +221,7 @@ test("V2.4.1在做多确认完整时允许合格Pre-Move进入探索", () => {
       marketDirection: "MIXED",
       volumeRatio15m: 1.25,
       overextensionRisk: "LOW",
+      opportunitySources: ["VOLATILITY_COMPRESSION"],
     },
   };
   const costs = buildShadowCostEstimate(preMoveCandidate, {
@@ -237,12 +238,63 @@ test("V2.4.1在做多确认完整时允许合格Pre-Move进入探索", () => {
     config: { ...config, radarRequired: true, radarModelVersion: "MARKET_RADAR_R3_PREMOVE" },
   });
   assert.equal(evaluation.eligible, true);
-  assert.equal(evaluation.scoreModel, "PRE_MOVE_V2_4_1_LONG_CONFIRM");
+  assert.equal(evaluation.scoreModel, "PRE_MOVE_V2_4_2_RETAINED_FILTER");
   assert.deepEqual(evaluation.rawPreMoveScores, { explosion: 82, direction: 76 });
   assert.equal(evaluation.hardRejectionReasons.length, 0);
 });
 
-test("V2.4.1成本门只影响Demo提升，高成本信号仍保留反事实研究交易", () => {
+test("V2.4.2仅RETAINED来源保留研究上下文但不得获得交易资格", () => {
+  const retainedOnly = {
+    ...candidate,
+    strategy: "PRE_BREAKOUT",
+    preMove: {
+      explosionScore: 82,
+      directionScore: 76,
+      compressionRatio: 0.72,
+      volumeAcceleration: 1.35,
+      directionalPressure: 0.7,
+      triggerConfirmation: {
+        latestDirectionalBodyAtr: 0.12,
+        latestDirectionalCloseChangeAtr: 0.08,
+        latestCloseLocation: 0.72,
+      },
+      alreadyBroken: false,
+    },
+    marketRadar: {
+      version: "MARKET_RADAR_R3_PREMOVE",
+      selected: true,
+      radarTier: "CORE",
+      radarScore: 84,
+      bias: "LONG",
+      marketDirection: "MIXED",
+      volumeRatio15m: 1.25,
+      overextensionRisk: "LOW",
+      opportunitySources: ["RETAINED"],
+    },
+  };
+  const evaluate = (item) => evaluateShadowCandidate(item, {
+    marketRegime: { direction: "LONG", breadthAgrees: true },
+    costEstimate: { totalCostR: 0.1, fundingCostR: 0, fundingDataAvailable: true },
+    fixedRiskPlan: buildFixedRiskShadowPlan(item, { equity: 500, targetRiskPercent: 0.5, leverage: 10 }),
+    config: { ...config, radarRequired: true, radarModelVersion: "MARKET_RADAR_R3_PREMOVE" },
+  });
+  const rejected = evaluate(retainedOnly);
+  assert.equal(rejected.eligible, false);
+  assert.equal(rejected.hardRejectionReasons.includes("V2_4_2_RETAINED_ONLY_NOT_TRADEABLE"), true);
+
+  const withIndependentSource = {
+    ...retainedOnly,
+    marketRadar: {
+      ...retainedOnly.marketRadar,
+      opportunitySources: ["RETAINED", "VOLATILITY_COMPRESSION"],
+    },
+  };
+  const accepted = evaluate(withIndependentSource);
+  assert.equal(accepted.eligible, true);
+  assert.equal(accepted.hardRejectionReasons.includes("V2_4_2_RETAINED_ONLY_NOT_TRADEABLE"), false);
+});
+
+test("V2.4.2成本门只影响Demo提升，高成本信号仍保留反事实研究交易", () => {
   const costlyCandidate = {
     ...candidate,
     strategy: "PRE_BREAKOUT",
@@ -268,6 +320,7 @@ test("V2.4.1成本门只影响Demo提升，高成本信号仍保留反事实研�
       marketDirection: "MIXED",
       volumeRatio15m: 1.25,
       overextensionRisk: "LOW",
+      opportunitySources: ["VOLATILITY_COMPRESSION"],
     },
   };
   const plan = buildFixedRiskShadowPlan(costlyCandidate, { equity: 500, targetRiskPercent: 0.5, leverage: 10 });
@@ -284,7 +337,7 @@ test("V2.4.1成本门只影响Demo提升，高成本信号仍保留反事实研�
   assert.equal(allocation.selected.length, 1);
 });
 
-test("V2.4.1保留未确认LONG研究记录但禁止进入执行选择", () => {
+test("V2.4.2保留未确认LONG研究记录但禁止进入执行选择", () => {
   const weakLong = {
     ...candidate,
     strategy: "PRE_BREAKOUT",
@@ -310,6 +363,7 @@ test("V2.4.1保留未确认LONG研究记录但禁止进入执行选择", () => {
       marketDirection: "MIXED",
       volumeRatio15m: 0.6,
       overextensionRisk: "LOW",
+      opportunitySources: ["VOLATILITY_COMPRESSION"],
     },
   };
   const evaluation = evaluateShadowCandidate(weakLong, {
@@ -320,16 +374,16 @@ test("V2.4.1保留未确认LONG研究记录但禁止进入执行选择", () => {
   });
   assert.equal(evaluation.eligible, false);
   assert.equal(evaluation.orderSubmissionAllowed, false);
-  assert.equal(evaluation.hardRejectionReasons.includes("V2_4_1_LONG_RADAR_NOT_CONFIRMED"), true);
-  assert.equal(evaluation.hardRejectionReasons.includes("V2_4_1_LONG_VOLUME_NOT_CONFIRMED"), true);
-  assert.equal(evaluation.hardRejectionReasons.includes("V2_4_1_LONG_COMPRESSION_NOT_CONFIRMED"), true);
-  assert.equal(evaluation.hardRejectionReasons.includes("V2_4_1_LONG_5M_TRIGGER_NOT_CONFIRMED"), true);
+  assert.equal(evaluation.hardRejectionReasons.includes("V2_4_2_LONG_RADAR_NOT_CONFIRMED"), true);
+  assert.equal(evaluation.hardRejectionReasons.includes("V2_4_2_LONG_VOLUME_NOT_CONFIRMED"), true);
+  assert.equal(evaluation.hardRejectionReasons.includes("V2_4_2_LONG_COMPRESSION_NOT_CONFIRMED"), true);
+  assert.equal(evaluation.hardRejectionReasons.includes("V2_4_2_LONG_5M_TRIGGER_NOT_CONFIRMED"), true);
   const allocation = selectProductionShadowCandidates([{ ...weakLong, shadowV2: evaluation }], [], { minimumScore: 55 });
   assert.equal(allocation.selected.length, 0);
   assert.equal(allocation.rejected.length, 1);
 });
 
-test("V2.4.1的LONG确认闸门不改变SHORT准入", () => {
+test("V2.4.2的LONG确认闸门不改变SHORT准入", () => {
   const shortCandidate = {
     ...candidate,
     direction: "SHORT",
@@ -352,6 +406,7 @@ test("V2.4.1的LONG确认闸门不改变SHORT准入", () => {
       marketDirection: "MIXED",
       volumeRatio15m: 0.6,
       overextensionRisk: "LOW",
+      opportunitySources: ["RANK_LOSER"],
     },
   };
   const evaluation = evaluateShadowCandidate(shortCandidate, {
@@ -361,5 +416,5 @@ test("V2.4.1的LONG确认闸门不改变SHORT准入", () => {
     config: { ...config, radarRequired: true, radarModelVersion: "MARKET_RADAR_R3_PREMOVE" },
   });
   assert.equal(evaluation.eligible, true);
-  assert.equal(evaluation.hardRejectionReasons.some((reason) => reason.startsWith("V2_4_1_LONG_")), false);
+  assert.equal(evaluation.hardRejectionReasons.some((reason) => reason.startsWith("V2_4_2_LONG_")), false);
 });

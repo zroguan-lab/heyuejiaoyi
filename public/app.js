@@ -429,7 +429,7 @@ function render(data) {
   const submissionEnabled = Boolean(execution.effectiveOrderSubmissionEnabled);
   const autoWatching = automation.enabled && automation.status === "WATCHING" && !executionHalted;
   const v2Execution = automation.strategySource === "V2_PRODUCTION";
-  elements.modeMark.textContent = emergencyStop.active ? "Demo 紧急停止" : safetyHold.active ? "Demo 安全暂停" : autoWatching ? `${v2Execution ? "V2.4.1 " : "V1 "}Demo 自动执行` : isTestnet ? "测试网研究模式" : "研究模式";
+  elements.modeMark.textContent = emergencyStop.active ? "Demo 紧急停止" : safetyHold.active ? "Demo 安全暂停" : autoWatching ? `${v2Execution ? "V2.4.2 " : "V1 "}Demo 自动执行` : isTestnet ? "测试网研究模式" : "研究模式";
   const testnetAccount = execution.account ?? {};
   const readiness = execution.readiness ?? {};
   const capacity = execution.capacity ?? {};
@@ -443,7 +443,7 @@ function render(data) {
     ? `执行流水 ${safetyHold.runId ?? "—"} 处于${executionStatusLabel(safetyHold.status)}，新订单暂停，交易所事实对账完成后自动恢复。`
     : autoWatching
     ? v2Execution
-      ? "V2.4.1先寻找波动收缩且靠近结构边界的标的；做多还必须通过原有确认。总成本不超过0.20R进入普通组，0.20R至0.35R进入高成本探索组，超过0.35R拒绝。"
+      ? "V2.4.2先寻找波动收缩且靠近结构边界的标的；仅靠RETAINED保留的候选不会下单，做多仍须通过原有确认。总成本不超过0.20R进入普通组，0.20R至0.35R进入高成本探索组，超过0.35R拒绝。"
       : "系统会把所有达到评分门槛、仍有效且通过执行校验的 V1 信号提交到 Binance Demo；真实资金账户始终不可用。"
     : gateway.orderSubmissionEnabled
       ? "策略信号测试网执行已解锁；只有已进入组合并通过确认的单笔计划可以提交。"
@@ -484,8 +484,8 @@ function render(data) {
       : "本区读取 Binance 测试网账户；上方模拟组合仍是独立的本地记录。";
   elements.marketCount.textContent = String(monitor.universeSize ?? monitor.symbols.length);
   elements.activeCount.textContent = String(activePortfolio.length);
-  elements.demoPnlLabel.textContent = v2Execution ? "V2.4.1 Demo 净盈亏" : "Demo 净盈亏";
-  elements.portfolioTitle.textContent = v2Execution ? "V2.4.1 Pre-Move 可执行信号" : "策略组合信号";
+  elements.demoPnlLabel.textContent = v2Execution ? "V2.4.2 Demo 净盈亏" : "Demo 净盈亏";
+  elements.portfolioTitle.textContent = v2Execution ? "V2.4.2 Pre-Move 可执行信号" : "策略组合信号";
   elements.performanceBasis.textContent = data.performanceEpoch
     ? `当前纪元 ${data.performanceEpoch.id ?? "V2"} · 从 ${formatTime(data.performanceEpoch.startedAt)} 起重新计算 · 旧版本历史仍保留`
     : "仅统计已平仓且账务完成的策略订单 · 北京时间归属交易日";

@@ -164,7 +164,7 @@ async function main() {
   console.info(`主行情源: ${providerLabel(config.primaryProvider)}`);
   console.info(`辅助校验源: ${providerLabel(config.auxiliaryProvider)}`);
   console.info(`行情环境: ${config.marketEnvironment === "TESTNET" ? "Binance Demo / Testnet" : config.marketEnvironment}`);
-  console.info(`策略: V2.4.1爆发前信号 · 做多二次确认 · 成本≤0.20R普通组 / 0.20R-0.35R探索组 · 每 ${config.pollMs / 1000} 秒检查`);
+  console.info(`策略: V2.4.2爆发前信号 · 仅RETAINED不可交易 · 做多二次确认 · 成本≤0.20R普通组 / 0.20R-0.35R探索组 · 每 ${config.pollMs / 1000} 秒检查`);
   console.info(`模式: ${config.execution.autoExecutionEnabled ? `DEMO_AUTO_EXECUTION（${config.execution.strategySource}，仅 Binance Demo）` : "RESEARCH_SIGNAL_ONLY"}`);
   console.info(`测试网账户: ${config.execution.accountReadOnlyEnabled ? "CONNECTED" : "DISABLED"}；订单提交: ${config.execution.orderSubmissionEnabled ? "CANARY_ARMED" : "DISABLED"}；自动策略执行: ${config.execution.autoExecutionEnabled ? "WATCHING" : "DISABLED"}`);
   void monitor.start().catch((error) => console.error("[monitor] 启动扫描失败", error));

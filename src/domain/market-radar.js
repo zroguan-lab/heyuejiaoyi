@@ -1,5 +1,6 @@
 export const MARKET_RADAR_VERSION = "MARKET_RADAR_R3_PREMOVE";
 export const MARKET_RADAR_SCHEMA_REVISION = 4;
+export const MARKET_RADAR_RETENTION_SOURCE = "RETAINED";
 
 const SOURCE_LABELS = Object.freeze({
   RANK_GAINER: "1小时领涨",
@@ -12,6 +13,17 @@ const SOURCE_LABELS = Object.freeze({
   CORE_MARKET: "核心市场",
   RETAINED: "最短观察期保留",
 });
+
+export function independentOpportunitySources(sources = []) {
+  return [...new Set(Array.isArray(sources) ? sources : [])]
+    .filter((source) => source !== MARKET_RADAR_RETENTION_SOURCE);
+}
+
+export function isRetentionOnlyOpportunity(sources = []) {
+  return Array.isArray(sources)
+    && sources.includes(MARKET_RADAR_RETENTION_SOURCE)
+    && independentOpportunitySources(sources).length === 0;
+}
 
 function clamp(value, minimum = 0, maximum = 1) {
   return Math.min(maximum, Math.max(minimum, value));
@@ -410,6 +422,7 @@ export function buildMarketRadarSnapshot(rawItems = [], {
 
 export function marketRadarContext(snapshot, item) {
   if (!snapshot || !item) return null;
+  const opportunitySources = [...(item.opportunitySources ?? [])];
   return {
     version: snapshot.version,
     schemaRevision: snapshot.schemaRevision,
@@ -440,7 +453,9 @@ export function marketRadarContext(snapshot, item) {
     structureWidthAtr: item.structureWidthAtr,
     overextensionRisk: item.overextensionRisk,
     liquidityRank: item.liquidityRank,
-    opportunitySources: [...(item.opportunitySources ?? [])],
+    opportunitySources,
+    independentOpportunitySources: independentOpportunitySources(opportunitySources),
+    retentionOnly: isRetentionOnlyOpportunity(opportunitySources),
     tags: [...(item.tags ?? [])],
     reasons: [...(item.reasons ?? [])],
   };

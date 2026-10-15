@@ -11,7 +11,7 @@ test("影子组合独立统计净R、PF、回撤且少于100笔不能晋级", ()
   assert.equal(performance.averageNetR, 0.3);
   assert.equal(performance.profitFactor, 2.5);
   assert.equal(performance.promotionGate.eligible, false);
-  assert.equal(performance.portfolio, "V2_4_1_PREMOVE");
+  assert.equal(performance.portfolio, "V2_4_2_PREMOVE");
   assert.equal(performance.sampleType, "FORWARD_DEMO_RESEARCH");
   assert.equal(performance.promotionGate.checks.minimumSamples, false);
 });

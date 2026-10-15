@@ -1,6 +1,7 @@
 import { regimeDirectionScore } from "./market-regime.js";
+import { isRetentionOnlyOpportunity } from "./market-radar.js";
 
-export const SHADOW_STRATEGY_VERSION = "PRE_MOVE_1H_15M_5M_V2_4_1_LONG_CONFIRM";
+export const SHADOW_STRATEGY_VERSION = "PRE_MOVE_1H_15M_5M_V2_4_2_RETAINED_FILTER";
 export const V2_1_CORE_TIER = "CORE";
 export const V2_1_EXPLORATION_TIER = "EXPLORATION";
 
@@ -112,6 +113,9 @@ function evaluatePreMoveCandidate(candidate, { marketRegime, costEstimate, fixed
       hardRejectionReasons.push("MARKET_RADAR_CONTEXT_INVALID");
     }
   }
+  if (isRetentionOnlyOpportunity(marketRadar?.opportunitySources)) {
+    hardRejectionReasons.push("V2_4_2_RETAINED_ONLY_NOT_TRADEABLE");
+  }
   if (!Number.isFinite(rawExplosionScore) || !Number.isFinite(rawDirectionScore)) hardRejectionReasons.push("PRE_MOVE_SCORE_UNAVAILABLE");
   if (Number.isFinite(rawExplosionScore) && rawExplosionScore < Number(config.preMoveHardMinimumExplosionScore ?? 35)) {
     hardRejectionReasons.push("PRE_MOVE_EXPLOSION_TOO_WEAK");
@@ -150,18 +154,18 @@ function evaluatePreMoveCandidate(candidate, { marketRegime, costEstimate, fixed
     const minimumLatestCloseLocation = Number(config.longMinimumLatestCloseLocation ?? 0.5);
     const volumeRatio15m = Number(marketRadar?.volumeRatio15m);
     const trigger = candidate.preMove?.triggerConfirmation ?? {};
-    if (marketRadar?.bias !== "LONG") hardRejectionReasons.push("V2_4_1_LONG_RADAR_NOT_CONFIRMED");
+    if (marketRadar?.bias !== "LONG") hardRejectionReasons.push("V2_4_2_LONG_RADAR_NOT_CONFIRMED");
     if (marketRadar?.marketDirection === "SHORT" || marketRegime?.direction === "SHORT") {
-      hardRejectionReasons.push("V2_4_1_LONG_MARKET_DIRECTION_CONFLICT");
+      hardRejectionReasons.push("V2_4_2_LONG_MARKET_DIRECTION_CONFLICT");
     }
     if (!Number.isFinite(volumeRatio15m) || volumeRatio15m < minimumVolumeRatio15m
       || !Number.isFinite(Number(candidate.preMove?.volumeAcceleration))
       || Number(candidate.preMove.volumeAcceleration) < minimumVolumeAcceleration) {
-      hardRejectionReasons.push("V2_4_1_LONG_VOLUME_NOT_CONFIRMED");
+      hardRejectionReasons.push("V2_4_2_LONG_VOLUME_NOT_CONFIRMED");
     }
     if (!Number.isFinite(Number(candidate.preMove?.compressionRatio))
       || Number(candidate.preMove.compressionRatio) > maximumCompressionRatio) {
-      hardRejectionReasons.push("V2_4_1_LONG_COMPRESSION_NOT_CONFIRMED");
+      hardRejectionReasons.push("V2_4_2_LONG_COMPRESSION_NOT_CONFIRMED");
     }
     if (!Number.isFinite(Number(candidate.preMove?.directionalPressure))
       || Number(candidate.preMove.directionalPressure) < minimumDirectionalPressure
@@ -171,7 +175,7 @@ function evaluatePreMoveCandidate(candidate, { marketRegime, costEstimate, fixed
       || Number(trigger.latestDirectionalCloseChangeAtr) <= minimumLatestCloseChangeAtr
       || !Number.isFinite(Number(trigger.latestCloseLocation))
       || Number(trigger.latestCloseLocation) < minimumLatestCloseLocation) {
-      hardRejectionReasons.push("V2_4_1_LONG_5M_TRIGGER_NOT_CONFIRMED");
+      hardRejectionReasons.push("V2_4_2_LONG_5M_TRIGGER_NOT_CONFIRMED");
     }
   }
 
@@ -194,13 +198,13 @@ function evaluatePreMoveCandidate(candidate, { marketRegime, costEstimate, fixed
   if (hardRejectionReasons.length === 0 && score >= coreMinimumScore && radarCoreEligible) experimentTier = V2_1_CORE_TIER;
   else if (hardRejectionReasons.length === 0 && score >= explorationMinimumScore) experimentTier = V2_1_EXPLORATION_TIER;
   const rejectionReasons = [...hardRejectionReasons];
-  if (hardRejectionReasons.length === 0 && !experimentTier) rejectionReasons.push("V2_4_1_SCORE_BELOW_EXPLORATION_THRESHOLD");
+  if (hardRejectionReasons.length === 0 && !experimentTier) rejectionReasons.push("V2_4_2_SCORE_BELOW_EXPLORATION_THRESHOLD");
   return {
     strategyVersion: SHADOW_STRATEGY_VERSION,
     mode: "SHADOW_ONLY",
     orderSubmissionAllowed: false,
     score,
-    scoreModel: "PRE_MOVE_V2_4_1_LONG_CONFIRM",
+    scoreModel: "PRE_MOVE_V2_4_2_RETAINED_FILTER",
     eligible: experimentTier !== null,
     experimentTier,
     coreMinimumScore,
@@ -358,7 +362,7 @@ export function selectProductionShadowCandidates(candidates, activeTrades = [], 
   return {
     selected,
     rejected,
-    selectionMode: "V2_4_1_PREMOVE_LONG_CONFIRMED_ALL_ELIGIBLE",
+    selectionMode: "V2_4_2_PREMOVE_RETAINED_FILTER_ALL_ELIGIBLE",
     totalRiskPercent: round(totalRisk, 4),
     fixedPositionLimit: null,
     correlationLimitEnforced: false,

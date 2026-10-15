@@ -5,7 +5,7 @@ import {
   evaluateV23CandidateSnapshot,
 } from "./v2-3-strategy-engine.js";
 
-export const V24_STRATEGY_CONTRACT_VERSION = "V2_4_1_STRATEGY_CONTRACT_R1";
+export const V24_STRATEGY_CONTRACT_VERSION = "V2_4_2_STRATEGY_CONTRACT_R1";
 export const V24_STRATEGY_SNAPSHOT_METADATA_KEY = "v2_4_strategy_snapshot";
 export const V24_LIVE_ADAPTER = "LIVE_DEMO";
 export const V24_HISTORICAL_ADAPTER = "HISTORICAL_REPLAY";
@@ -60,8 +60,8 @@ export function evaluateV24CandidateSnapshot(snapshot, options) {
 }
 
 export function runV24StrategyAdapter({ adapter, snapshot, config } = {}) {
-  if (!ADAPTERS.has(adapter)) throw new TypeError("V2.4.1适配器只能是LIVE_DEMO或HISTORICAL_REPLAY");
-  if (!snapshot || !config) throw new TypeError("V2.4.1适配器缺少snapshot或config");
+  if (!ADAPTERS.has(adapter)) throw new TypeError("V2.4.2适配器只能是LIVE_DEMO或HISTORICAL_REPLAY");
+  if (!snapshot || !config) throw new TypeError("V2.4.2适配器缺少snapshot或config");
   const decisionTime = snapshot.decisionTime ?? Date.now();
   const stableSnapshot = { ...snapshot, decisionTime };
   const analysis = analyzeV24SignalSnapshot(stableSnapshot, {
@@ -89,6 +89,6 @@ export function runV24StrategyAdapter({ adapter, snapshot, config } = {}) {
 
 export function v24DecisionFingerprint(result) {
   const decision = result?.decision ?? result;
-  if (!decision) throw new TypeError("缺少可生成指纹的V2.4.1决策结果");
+  if (!decision) throw new TypeError("缺少可生成指纹的V2.4.2决策结果");
   return fingerprint(decision);
 }

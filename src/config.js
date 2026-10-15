@@ -142,7 +142,7 @@ export function loadConfig() {
     }),
     shadowV2: Object.freeze({
       enabled: shadowV2Enabled,
-      strategyVersion: "PRE_MOVE_1H_15M_5M_V2_4_1_LONG_CONFIRM",
+      strategyVersion: "PRE_MOVE_1H_15M_5M_V2_4_2_RETAINED_FILTER",
       executionEnabled: testnetAutoExecution && testnetExecutionStrategy === V2_EXECUTION_SOURCE,
       minimumScore: shadowV2ExplorationMinimumScore,
       coreMinimumScore: shadowV2CoreMinimumScore,
@@ -199,7 +199,7 @@ export function loadConfig() {
       canaryLeverage: Math.trunc(numberFromEnv("BINANCE_TESTNET_CANARY_LEVERAGE", 10, { min: 10, max: 10 })),
       maxNotionalOverageRate: numberFromEnv("BINANCE_TESTNET_MAX_NOTIONAL_OVERAGE_RATE", 0.05, { min: 0, max: 0.1 }),
       pullbackEntryTtlMs: numberFromEnv("PULLBACK_ENTRY_TTL_SECONDS", 180, { min: 30, max: 900 }) * 1000,
-      positionPolicy: testnetExecutionStrategy === V2_EXECUTION_SOURCE ? "V2_4_1_PREMOVE_LONG_CONFIRMED_ALL_ELIGIBLE" : "ALL_ELIGIBLE",
+      positionPolicy: testnetExecutionStrategy === V2_EXECUTION_SOURCE ? "V2_4_2_PREMOVE_RETAINED_FILTER_ALL_ELIGIBLE" : "ALL_ELIGIBLE",
       initialAllowedSymbols: Object.freeze([canarySymbol]),
     }),
     strategy: Object.freeze({

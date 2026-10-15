@@ -8,6 +8,9 @@ import {
   V2_4_1_HIGH_COST_COHORT,
   V2_4_1_NORMAL_COST_COHORT,
   V2_4_1_SIGNAL_MODEL_VERSION,
+  V2_4_2_DEMO_PROMOTION_POLICY_VERSION,
+  V2_4_2_DEMO_STRATEGY_VERSION,
+  V2_4_2_SIGNAL_MODEL_VERSION,
   V2_4_DEMO_STRATEGY_VERSION,
   V2_DEMO_STRATEGY_VERSION,
   V2_EXECUTION_SOURCE,
@@ -68,14 +71,32 @@ test("V2.4.1 Demo准入按0.20R普通组和0.35R探索上限分层", () => {
   assert.equal(assessV2DemoPromotion({ strategyVersion: "MTF_1H_15M_5M_V2_2_MOVERS" }).eligible, true);
 });
 
+test("历史V2.4.1研究记录仍投影到V2.4.1执行版本，不被当前V2.4.2重写", () => {
+  const record = projectV2ExecutionSignal({
+    candidate: { id: "v2-4-1-old", symbol: "ETHUSDT", strategy: "PRE_BREAKOUT", triggerTime: 3000, score: 68 },
+    evaluation: {
+      eligible: true,
+      score: 72,
+      strategyVersion: V2_4_1_SIGNAL_MODEL_VERSION,
+      costs: { totalCostR: 0.18 },
+    },
+    decision: { selected: true },
+    trade: { signalId: "v2-4-1-old", symbol: "ETHUSDT", status: "ENTRY_PENDING" },
+  });
+
+  assert.equal(record.candidate.strategyVersion, V2_4_1_DEMO_STRATEGY_VERSION);
+  assert.equal(record.candidate.signalModelVersion, V2_4_1_SIGNAL_MODEL_VERSION);
+  assert.equal(record.promotionDecision.policyVersion, V2_4_1_DEMO_PROMOTION_POLICY_VERSION);
+});
+
 test("绩效纪元只接受同策略源、同执行版本、同信号模型且在起点之后创建的订单", () => {
   const epoch = {
     strategySource: V2_EXECUTION_SOURCE,
     strategyVersion: V2_DEMO_STRATEGY_VERSION,
-    signalModelVersion: V2_4_1_SIGNAL_MODEL_VERSION,
+    signalModelVersion: V2_4_2_SIGNAL_MODEL_VERSION,
     startedAt: 1000,
   };
-  const current = { executionSource: V2_EXECUTION_SOURCE, strategyVersion: V2_DEMO_STRATEGY_VERSION, signalModelVersion: V2_4_1_SIGNAL_MODEL_VERSION, createdAt: 1000 };
+  const current = { executionSource: V2_EXECUTION_SOURCE, strategyVersion: V2_DEMO_STRATEGY_VERSION, signalModelVersion: V2_4_2_SIGNAL_MODEL_VERSION, createdAt: 1000 };
   assert.equal(tradeBelongsToEpoch(current, epoch), true);
   assert.equal(tradeBelongsToEpoch({ ...current, createdAt: 999 }, epoch), false);
   assert.equal(tradeBelongsToEpoch({ ...current, executionSource: V1_EXECUTION_SOURCE }, epoch), false);
@@ -83,19 +104,28 @@ test("绩效纪元只接受同策略源、同执行版本、同信号模型且�
   assert.equal(tradeBelongsToEpoch({ ...current, signalModelVersion: "PRE_MOVE_1H_15M_5M_V2_4" }, epoch), false);
 });
 
-test("V2.4.1分层成本切换创建独立绩效纪元并保留V2.4引用", () => {
+test("V2.4.2保留源过滤创建独立绩效纪元并保留V2.4.1引用", () => {
   const epoch = buildPerformanceEpoch({
     now: 1_800_000_000_000,
     startingEquity: 500,
     strategyVersion: V2_DEMO_STRATEGY_VERSION,
-    signalModelVersion: V2_4_1_SIGNAL_MODEL_VERSION,
+    signalModelVersion: V2_4_2_SIGNAL_MODEL_VERSION,
     radarVersion: "MARKET_RADAR_R3_PREMOVE",
-    previousEpoch: { id: "V2.4-old", strategyVersion: V2_4_DEMO_STRATEGY_VERSION },
+    previousEpoch: { id: "V2.4.1-old", strategyVersion: V2_4_1_DEMO_STRATEGY_VERSION },
   });
-  assert.equal(V2_DEMO_STRATEGY_VERSION, V2_4_1_DEMO_STRATEGY_VERSION);
-  assert.match(epoch.id, /^V2\.4\.1-/);
+  assert.equal(V2_DEMO_STRATEGY_VERSION, V2_4_2_DEMO_STRATEGY_VERSION);
+  assert.match(epoch.id, /^V2\.4\.2-/);
   assert.equal(epoch.startingEquity, 500);
-  assert.equal(epoch.previousEpochId, "V2.4-old");
+  assert.equal(epoch.previousEpochId, "V2.4.1-old");
   assert.equal(epoch.radarVersion, "MARKET_RADAR_R3_PREMOVE");
-  assert.match(epoch.reason, /分层成本/);
+  assert.match(epoch.reason, /仅RETAINED来源不再获得交易资格/);
+});
+
+test("V2.4.2沿用成本分层但使用独立晋级策略版本", () => {
+  const base = { strategyVersion: V2_4_2_SIGNAL_MODEL_VERSION, costs: { totalCostR: 0.28 } };
+  const decision = assessV2DemoPromotion(base);
+  assert.equal(decision.eligible, true);
+  assert.equal(decision.policyVersion, V2_4_2_DEMO_PROMOTION_POLICY_VERSION);
+  assert.equal(decision.maximumCostR, 0.35);
+  assert.equal(decision.costCohort, V2_4_1_HIGH_COST_COHORT);
 });
