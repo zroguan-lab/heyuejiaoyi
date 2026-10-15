@@ -1,0 +1,33 @@
+{
+  "name": "crypto-futures-signal-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "加密货币合约研究监控与受控 Binance 测试网金丝雀执行系统",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env --use-env-proxy --disable-warning=ExperimentalWarning src/index.js",
+    "dev": "node --env-file-if-exists=.env --use-env-proxy --disable-warning=ExperimentalWarning --watch src/index.js",
+    "scan": "node --env-file-if-exists=.env --use-env-proxy src/scan-once.js",
+    "backtest": "node --env-file-if-exists=.env --use-env-proxy --disable-warning=ExperimentalWarning src/research-backtest.js",
+    "backtest:legacy": "node src/backtest.js",
+    "snapshot:v2.3": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning scripts/show-v2-3-strategy-snapshot.js",
+    "report:v2.3-demo": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning scripts/report-v2-3-demo-baseline.js",
+    "data:sync": "node --env-file-if-exists=.env --use-env-proxy --disable-warning=ExperimentalWarning scripts/sync-historical-data.js sync",
+    "data:sync-top": "node --env-file-if-exists=.env --use-env-proxy --disable-warning=ExperimentalWarning scripts/sync-historical-data.js sync-top",
+    "data:snapshot": "node --env-file-if-exists=.env --use-env-proxy --disable-warning=ExperimentalWarning scripts/sync-historical-data.js snapshot",
+    "data:collect-facts": "node --env-file-if-exists=.env.public --use-env-proxy --disable-warning=ExperimentalWarning scripts/collect-historical-facts.js",
+    "data:backfill-universe": "node --env-file-if-exists=.env.public --use-env-proxy --disable-warning=ExperimentalWarning scripts/backfill-historical-universe.js",
+    "data:catchup-universe": "node --env-file-if-exists=.env.public --use-env-proxy --disable-warning=ExperimentalWarning scripts/catchup-historical-universe.js",
+    "data:continue-pipeline": "node --disable-warning=ExperimentalWarning scripts/continue-historical-pipeline.js",
+    "data:audit": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning scripts/sync-historical-data.js audit",
+    "replay:v2.3": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning scripts/replay-v2-3-history.js",
+    "replay:portfolio": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning scripts/replay-v2-3-portfolio.js",
+    "validate:v2.3": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning scripts/validate-v2-3-history.js",
+    "canary": "node --env-file-if-exists=.env --use-env-proxy --disable-warning=ExperimentalWarning src/testnet-canary.js",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js",
+    "check": "node --check src/index.js && node --check src/http/server.js && node --check src/application/research-monitor.js && node --check src/presentation/strategy-performance.js && node --check src/presentation/shadow-performance.js && node --check src/research-backtest.js && node --check src/research/historical-data-catalog.js && node --check src/research/historical-data-sync.js && node --check src/research/historical-fact-collector.js && node --check src/research/historical-backfill-job.js && node --check src/research/historical-catchup-job.js && node --check src/research/historical-binance-client.js && node --check src/research/historical-job-runtime.js && node --check src/research/historical-market-replay.js && node --check src/research/historical-portfolio-replay.js && node --check src/research/v2-3-validation.js && node --check src/research/v2-3-demo-baseline.js && node --check src/domain/market-regime.js && node --check src/domain/market-radar.js && node --check src/domain/pre-move-strategy.js && node --check src/domain/shadow-v2.js && node --check src/domain/v2-3-strategy-engine.js && node --check src/domain/v2-4-strategy-engine.js && node --check src/testnet-canary.js && node --check src/domain/trade-reason.js && node --check src/exchanges/binance-futures.js && node --check src/exchanges/binance-rate-limit.js && node --check src/execution/execution-strategy-source.js && node --check src/execution/entry-order-policy.js && node --check src/execution/binance-testnet-trading.js && node --check src/execution/binance-testnet-readonly.js && node --check src/execution/testnet-canary-executor.js && node --check src/application/strategy-execution-coordinator.js && node --check scripts/show-v2-3-strategy-snapshot.js && node --check scripts/report-v2-3-demo-baseline.js && node --check scripts/sync-historical-data.js && node --check scripts/collect-historical-facts.js && node --check scripts/backfill-historical-universe.js && node --check scripts/catchup-historical-universe.js && node --check scripts/continue-historical-pipeline.js && node --check scripts/replay-v2-3-history.js && node --check scripts/replay-v2-3-portfolio.js && node --check scripts/validate-v2-3-history.js && node --check scripts/close-live-strategy-run.js && node --check public/app.js"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
