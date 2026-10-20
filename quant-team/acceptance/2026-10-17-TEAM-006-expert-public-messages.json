@@ -1,0 +1,239 @@
+{
+  "task": "TEAM-006",
+  "asOf": "2026-10-17T14:03:51Z",
+  "note": "Only public agentMessage commentary/final outputs; no hidden reasoning or raw account/tool payloads.",
+  "experts": [
+    {
+      "role": "execution",
+      "threadId": "01a14427-f70c-7bc1-a135-a21bf392cdcd",
+      "turns": [
+        {
+          "id": "01a14a2b-03e9-7871-87fa-ece76b5fe481",
+          "status": "completed",
+          "messages": [
+            {
+              "text": "我会先读更新后的授权，再用内存测试复现：从初始两条 TP 均为 NEW 的 `OPEN_PROTECTED` 状态出发，让 TP 转为终态、SL 保持有效，检查它是否进入恢复。若反例成立，再做最小修复并保留回归测试。",
+              "phase": "commentary"
+            },
+            {
+              "text": "反例已复现：新增测试在修复前失败。初始 `OPEN_PROTECTED` 的 TP1 转为 REJECTED 后，对账仍返回 `OPEN_PROTECTED`，没有进入退避恢复。我会仅将“初始保护阶段、SL 有效、TP 已确认失败且无成交”的情况接入现有恢复分支。",
+              "phase": "commentary"
+            },
+            {
+              "text": "反例成立，已保留回归测试并完成最小修复。\n\n- **修复前实测失败**：TP1 从 NEW 转 REJECTED 后，仍返回 `OPEN_PROTECTED`，未进入恢复。\n- **修复后**：初始阶段、SL 有效且 TP 已确认失败、无成交时，进入现有有界退避恢复。测试覆盖 TP1 REJECTED、TP2 CANCELED，经公开 `reconcile` 入口验证 30 秒后使用 `-r1` 恢复。\n- 断言计划、planHash、价格、比例不变；未撤 SL、未重复创建另一腿。FINISHED、有成交腿及 BE 分支未扩大。\n\n相关七文件隔离回归 **102/102 通过**，`git diff --check` 通过。本次仅改执行器及对应测试，未操作服务、活动库或交易所；待独立 QA 复核。",
+              "phase": "final_answer"
+            }
+          ]
+        },
+        {
+          "id": "01a14a1c-cd3f-7241-b0b3-2122336b156a",
+          "status": "completed",
+          "messages": [
+            {
+              "text": "我会核对账户归属逻辑和更新后的合同，仅把本 run 持久化的 TP 尝试 ID 纳入认领，并保留标的、重复认领及外部订单检查。随后补三个反例，并通过 `reconcileAll` 验证恢复 ID 的归属。",
+              "phase": "commentary"
+            },
+            {
+              "text": "已修复恢复 ID 的账户归属缺口，相关隔离测试 **54/54 通过**。\n\n- 仅认领本 run 的 `tpRecovery.takeProfit1/2.ids` 中明确保存的 ID。\n- 保留严格 symbol 校验和跨 run 冲突检测；同币外部 ID、未登记的 `currentClientId` 仍为 UNKNOWN。\n- 新增反例覆盖新 ID 正常归属、跨 run 抢 ID、同币外部 ID及错币订单。\n- `reconcileAll` 联测确认：恢复后的 `-r1` 活动订单保持正常归属，未触发紧急停止，未重复创建保护单。\n\n仅修改新增授权文件及原有测试，未改其他冻结模块。待 QA 独立验收，未部署。",
+              "phase": "final_answer"
+            }
+          ]
+        },
+        {
+          "id": "01a14a15-15b2-7042-8e8d-9395a1dfe07f",
+          "status": "completed",
+          "messages": [
+            {
+              "text": "我会先读取 TEAM-006 合同与当前执行器，给出最小恢复设计，再在指定两个文件内实施。重点保持有效止损，区分已知终态与未知提交，让 TP 两腿独立恢复，并用内存 fake 验证重启和成交归属。",
+              "phase": "commentary"
+            },
+            {
+              "text": "最小设计：在 `run.protection` 保存每条 TP 腿的尝试 ID、已知订单、未知提交标记与下次重试时间，不修改 `plan.clientIds` 或 planHash。仅确认无成交的终态失败才分配新 ID，最多三次替代尝试，按 30 秒起退避；未知响应只查询原 ID。SL 先确认，TP2 与 TP1 分别处理错误；任何已有成交的腿不重建，TP1 成交后继续现有 BE 流程。\n\n同时按总控接口要求，成功新建的 `prepare` 将额外返回实际构造计划所用记录的深拷贝 `sourceDecisionRecord`，复用分支不补写。我也会应用架构优先技能核对恢复元数据的归属和验收边界。",
+              "phase": "commentary"
+            },
+            {
+              "text": "首轮回归中，35/36 通过；失败是旧测试期望的保护审计事件数，新增路径已改用恢复事件名。我会保留原有保护意图/确认事件，并用额外字段记录尝试 ID，避免破坏现有审计口径。正在补充终态重试上限、未知响应重启、TP1 部分成交及历史订单归属测试。",
+              "phase": "commentary"
+            },
+            {
+              "text": "`prepare` 接口已接好：仅新建成功返回 `sourceDecisionRecord: structuredClone(signalRecord)`，复用分支保持不返回，未写入 plan 或改变 planHash。当前执行器 42 项测试通过；恢复状态持久化在 `run.protection.tpRecovery`，替代订单 ID 可在重启后查询，历史订单保留供成交归属与无仓清理使用。正在补最后几个“已结束但数量未知”和 TP1 后恢复 TP2 的边界。",
+              "phase": "commentary"
+            },
+            {
+              "text": "TP 恢复实现已完成，执行器测试 46/46 通过。两个限制保留：历史记录若缺少可确认的提交结果，只查询原 ID，不据旧审计猜测后重发；FINISHED 或取消单缺成交量时也暂停该腿恢复。新逻辑仅对明确的 −2021 拒绝或已知无成交终态作有界替代，不自动调价、平仓或撤有效止损。最后运行相关回归后交总控转 QA。",
+              "phase": "commentary"
+            },
+            {
+              "text": "TEAM-006 执行部分已实施，交总控转独立 QA；未部署。\n\n仅修改指定执行器与对应测试，保留 TEAM-003 修改：\n\n- [TP 恢复](D:/codex项目/交易信号/src/execution/testnet-canary-executor.js:1036)：两腿独立处理；明确无成交终态最多 3 个替代 ID，30 秒起指数退避、最高 300 秒。未知提交仅查原 ID。\n- [重启查询](D:/codex项目/交易信号/src/execution/testnet-canary-executor.js:1187)：跟踪原始及替代 ID，保存历史订单供成交归属和无仓清理。\n- 保留有效 SL；部分成交腿不补发；TP1 后沿用既有 BE 顺序，再独立恢复 TP2。全量退出待结算时不新增 TP1。\n- [prepare 接口](D:/codex项目/交易信号/src/execution/testnet-canary-executor.js:458)：仅成功新建返回 `sourceDecisionRecord` 深拷贝；复用分支不返回，planHash 不变。\n\n验证：执行器 **46/46**、相关七文件回归 **96/96**，`git diff --check` 通过。覆盖终态阻断反例、退避上限、未知响应重启、部分成交、TP1 先成交、无仓清理及替代订单成交归属。\n\n限制：历史缺提交结果、FINISHED/取消单缺成交量时保持待核实，不盲重发；没有验证交易所真实行为或历史价格因果。未改目标价、比例、仓位、策略、请求参数模块，未操作活动库、服务或交易所。",
+              "phase": "final_answer"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "role": "data",
+      "threadId": "01a14425-cf0f-7973-a683-1e37a95676c3",
+      "turns": [
+        {
+          "id": "01a14a23-34e8-72d3-b9ad-67520deb2153",
+          "status": "completed",
+          "messages": [
+            {
+              "text": "已暂停 TEAM-006，无未结束的工具调用。保留当前文件，不再执行开发、测试或审查；未操作活动库、服务或交易。",
+              "phase": "final_answer"
+            }
+          ]
+        },
+        {
+          "id": "01a14a21-7e1c-7320-b02d-369fd46ee4f1",
+          "status": "completed",
+          "messages": [
+            {
+              "text": "我会补上市场环境决策时间及 BTC 1h/4h K 线截止时间的检查：未来时间标记违规，缺失保持 null；不把已知的下一次 funding 计划时间视为泄漏。\n",
+              "phase": "commentary"
+            },
+            {
+              "text": "P1 已修正，API 不变。以下时间超过 decisionTime 时加入 `timingViolations`：\n\n- `marketRegime.decidedAt`\n- `marketRegime.btc1h.candleCloseTime`\n- `marketRegime.btc4h.candleCloseTime`\n\n原始时间保留，不自动修回；缺失为 null，并记录 missing reason。未来 `nextFundingTime` 不判泄漏。\n\n最新隔离测试 **32/32 通过**。指定文件本轮修改完成，待独立 QA 复核；未操作活动库、未部署。",
+              "phase": "final_answer"
+            }
+          ]
+        },
+        {
+          "id": "01a14a1f-e539-70e3-b758-5e4d2601c213",
+          "status": "completed",
+          "messages": [
+            {
+              "text": "我会为每个 run 增加数据库唯一约束，保留 SHADOW_DECISION 多事件能力，并验证冲突写入失败后原始入场快照不变。仅使用隔离 fixture。\n",
+              "phase": "commentary"
+            },
+            {
+              "text": "已增加部分唯一索引：\n\n```sql\nUNIQUE(run_id) WHERE scope = 'ENTRY_PRE_SUBMIT'\n```\n\nfixture 验证通过：同 run 不同 snapshotId 或 decisionTime 均写入失败，原始快照保留；相同快照仍幂等；SHADOW_DECISION 可保存多个事件。\n\n最新隔离测试 **31/31 通过**。未迁移活动库，未部署。",
+              "phase": "final_answer"
+            }
+          ]
+        },
+        {
+          "id": "01a14a1c-7bca-7400-b998-f1969bbac4f2",
+          "status": "completed",
+          "messages": [
+            {
+              "text": "我会核实 QA 提醒的冗余与校验反例，并把 `saveShadowDecision` 的实际采集时间和显式决策时间分开，避免历史 `decidedAt` 被当作采集时间。\n",
+              "phase": "commentary"
+            },
+            {
+              "text": "QA 提醒已处理，接口保持不变。\n\n- `sameShape` 已不存在；当前校验包含字段类型检查。\n- 补测：嵌套对象、额外字段、Infinity/NaN、错误评分类型，即使重算 hash 仍被拒绝。\n- 修正 `saveShadowDecision`：`captureTime` 独立取持久化时的 `Date.now()`；显式 `decidedAt` 仅作为决策时间，上游接收时间缺失仍为 null。\n- 原子回滚、UPDATE/DELETE/INSERT OR REPLACE 阻断测试均通过。\n\n最新隔离测试 **30/30 通过**。未操作活动库、未部署，待独立 QA。",
+              "phase": "final_answer"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "role": "stats",
+      "threadId": "01a14425-e0dd-70e3-a06e-4455a7175119",
+      "turns": [
+        {
+          "id": "01a14a29-2e07-78d0-a1a8-4edfc61e9482",
+          "status": "completed",
+          "messages": [
+            {
+              "text": "我会独立重跑当前研究测试，并用暂停前的最小反例核对跨run冲突是否整体排除，限定验收研究方法与资格闸门。\n",
+              "phase": "commentary"
+            },
+            {
+              "text": "**TEAM-006限定验收PASS：研究方法与已审资格闸门通过，不代表盈利因子通过。**\n\n2026-10-17 21:59北京时间独立取得：\n\n- 当前纯fixture测试 **16/16通过**。\n- 暂停前跨run重复成交反例复验：两个候选均保留，两个冲突run全部排除，正式笔数为0、净PnL为null；交换输入顺序结果一致。\n- 订单、fill、Funding跨run冲突检查，同run重复幂等及不同symbol编号隔离测试通过。\n- 此前发现的版本、未来时间、事后快照和入场快照歧义反例均已有通过的回归测试；历史失败记录仍应保留。\n\n适用边界：单一本地Demo账户数据集，仅输出匹配正式成交队列的描述性诊断；不估算全候选或组合反事实收益，不推断Funding分摊，不自动交易或晋级。\n\n未验证线上部署、真实前向收益、完整可成交路径或统计显著性。注册协议hash留档、固定时间外评价窗口仍是后续盈利验证前提。本轮未写文件、未操作活动库或服务。",
+              "phase": "final_answer"
+            }
+          ]
+        },
+        {
+          "id": "01a14a27-db1b-7333-aeed-9a8fda0378c8",
+          "status": "completed",
+          "messages": [
+            {
+              "text": "我会先重读当前授权与岗位技能，再整理跨run重复成交的最小复现和冲突键边界，并检查协议内其他实质漏洞。最终复验等总控修复通知后进行。\n",
+              "phase": "commentary"
+            },
+            {
+              "text": "已重读当前授权、TEAM-006及岗位技能。当前只提供修复输入，**等待总控通知后最终复验**。\n\n最小复现：使用现有`fixture`创建合法A、B两个signal/run，各有独立快照，然后仅执行：\n\n```js\nb.run.entryOrder = structuredClone(a.run.entryOrder);\nb.run.result = structuredClone(a.run.result);\n```\n\n将两组快照、两条run传入验证器。修正前，同一份成交被计为2笔，净PnL由1.9重复为3.8，未报告冲突。\n\n建议冲突键边界：\n\n| 对象 | 键及处理 |\n|---|---|\n| 账户范围 | 交易场所＋Demo/Real环境＋稳定脱敏账户标识；当前无账户标识时，限定为同一来源库、单账户数据，不能凭run自报不同账户绕过检查 |\n| 订单 | 账户范围＋symbol＋orderId；检查入场、退出及成交实际引用订单 |\n| 成交 | 账户范围＋symbol＋fillId；不能加入runId，否则失去跨run检测作用 |\n| Funding | 账户范围＋symbol＋incomeType＋transactionId；共享记录不得重复全额计入 |\n| 执行记录 | runId应唯一；同ID冲突payload应整体拒绝，完全重复可幂等处理 |\n\n冲突检查应覆盖输入的相关执行记录，不能只检查最终通过资格的赢家；不合格run也可能暴露归属冲突。涉及冲突的run全部退出收益诊断，候选人口保留，并返回明确原因。合法Funding分摊须有分摊依据及金额守恒；当前没有该能力时保持UNKNOWN，不自行均分。\n\n另有两项协议限制，**不是新增策略要求**：\n\n- 当前`protocolHash`是运行时计算的内容指纹，没有与外部冻结值比对；它能标识本次协议，单独不能证明注册后从未变更。交付记录应保存注册协议hash，后续变更另建版本。\n- 目前协议只授权描述性诊断，尚未冻结具体时间外评价窗口和推断方法；因此保持`promotionAllowed=false`正确，不能把7天检查点当盈利验收。\n\n本次未新增其他已复现漏洞，未改文件、未访问活动库或操作服务。",
+              "phase": "final_answer"
+            }
+          ]
+        },
+        {
+          "id": "01a14a23-585e-7e13-8c1d-fc2ce68ca6a6",
+          "status": "completed",
+          "messages": [
+            {
+              "text": "已暂停TEAM-006统计复验。没有未结束工具；不会继续执行命令或补完验收。",
+              "phase": "final_answer"
+            }
+          ]
+        },
+        {
+          "id": "01a14a22-335b-7303-8824-9b2aac970ce6",
+          "status": "completed",
+          "messages": [
+            {
+              "text": "我会复验新增的本地时间链和嵌套时间检查，并重跑当前研究测试；只报告本次实际取得的结果。\n",
+              "phase": "commentary"
+            },
+            {
+              "text": "**当前14/14研究测试已独立重跑通过，原6项反例修正通过；另发现1项重复归属反例，整体暂不PASS。**\n\n已确认本地时间链、scope版本、触发时间、入场快照歧义及嵌套市场时间检查生效。交易所fill仅作截止检查，没有强拼本地毫秒顺序。\n\n**新增[P1]：跨run共享成交会重复计算收益。**\n\n内存复现：创建两个不同signal/run，各有合法快照；第二个run引用第一个run相同的entryOrder、ownedOrderIds与全部fills。当前结果：\n\n- 正式样本计为2笔；\n- 同一组实际成交净PnL由1.9重复计为3.8；\n- `outcomeMissing`为空。\n\n当前去重仅在单run内部执行，不能发现跨run归属冲突。建议对同一账户/环境内的`symbol+orderId`、`symbol+fillId`及Funding交易ID建立跨run检查，冲突涉及的run整体排除并报告，不能选择其中收益更好的版本。Funding归属若存在合法拆分，需明确分摊证据及总额守恒。\n\n限定结论：**原修正复验PASS，跨run重复归属防线FAIL**；无交易能力和描述性队列范围的结论保持通过。未写文件、未操作活动库或服务。",
+              "phase": "final_answer"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "role": "qa",
+      "threadId": "01a14428-120b-7fd1-930c-af3c95a68cd8",
+      "turns": [
+        {
+          "id": "01a14a2c-2e83-7843-884d-2828f5e88d05",
+          "status": "completed",
+          "messages": [
+            {
+              "text": "我会独立复验OPEN_PROTECTED后TP失效的新入口，核对FINISHED、未知提交、部分成交和BE阶段不被误重建，再运行最新全量与语法检查。此前325/325未覆盖此反例的限制保留。",
+              "phase": "commentary"
+            },
+            {
+              "text": "**TEAM-006最终独立验收：PASS，限定于最新源码的离线修复与隔离测试。**  \n时间：2026-10-17 22:03（北京时间）。\n\n- 新入口及周边执行/归属测试：**55/55通过**。\n- 最新全量：**326/326通过**，无失败或跳过；语法检查通过。\n- 已确认OPEN_PROTECTED后TP1 REJECTED／TP2 CANCELED进入有界恢复，退避30秒后使用`-r1`；计划、hash、有效SL及另一腿保持不变。\n- FINISHED、未知提交、部分成交及TP1后BE保护相关回归通过。\n\n此前**325/325未覆盖该入口**的历史限制保留，不能改写为当时已验证。\n\n未部署、未操作活动库或真实订单；真实交易所恢复效果及前向盈利仍未验证。",
+              "phase": "final_answer"
+            }
+          ]
+        },
+        {
+          "id": "01a14a2b-1021-7000-8a33-c61e3b7c0008",
+          "status": "completed",
+          "messages": [
+            {
+              "text": "已将“原OPEN_PROTECTED后TP失效”的入口列为**未核验项**；325/325不证明该路径已覆盖。\n\n此前限定PASS证据保留，TEAM-006整体验收暂记**PARTIAL**。待总控转发隔离验证或补丁后，仅复验该路径及相关回归。",
+              "phase": "final_answer"
+            }
+          ]
+        },
+        {
+          "id": "01a14a29-1f33-7532-bc8e-c7a0ac4a64eb",
+          "status": "completed",
+          "messages": [
+            {
+              "text": "我会恢复TEAM-006只读独立审查，先重读授权与岗位规则，再复验执行恢复、快照存储、研究器及冻结文件。集成测试待总控确认稳定后验收。",
+              "phase": "commentary"
+            },
+            {
+              "text": "当前5组定向复验已通过89/89；8个策略、配置及订单计划文件的SHA-256与HEAD逐字节一致。真实Store集成已交付，我将审阅新增案例并完成最终全量回归。",
+              "phase": "commentary"
+            },
+            {
+              "text": "**TEAM-006最终独立验收：PASS，限定于当前源码的离线实现与隔离测试；未部署、未验证盈利。**\n\n取证时间：2026-10-17 22:00–22:01（北京时间）。\n\n- **全量测试325/325通过**，无失败或跳过；语法检查通过。\n- 真实`ResearchStore(:memory:)`—协调器集成通过：入选/拒绝快照、评分区分、执行前写入读回、不可变性及失败禁止execute。\n- 既有阻断已关闭：恢复ID精确归属、嵌套未来时间泄漏、旧审计/纪元错配、多ENTRY歧义、跨run共享订单/成交/Funding重复计收益。\n- 独立计算8个冻结文件SHA-256，均与HEAD逐字节一致，涵盖config、pre-move、radar、shadow、risk、canary-plan、entry-policy及策略版本源。\n\n已审阅并运行[只读研究入口](/D:/codex项目/交易信号/quant-team/research/validate-team-006.mjs)，实际返回 **`NOT_DEPLOYED_SNAPSHOT_SCHEMA_ABSENT`**，前向样本数为null，交易及晋级权限均false。\n\n**限制：**未迁移活动库、未切换服务、未验证交易所真实恢复行为；没有真实前向样本支持收益改善。新增证据闸门可能阻止证据故障期间的提交，不能称交易行为完全不变。此前失败及修正记录应保留，不以最终通过覆盖历史证据。",
+              "phase": "final_answer"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -259,8 +259,11 @@ function renderDemoTrades(items, performance = null) {
       Number.isFinite(trade.entrySpreadBps) ? `提交时点差 ${trade.entrySpreadBps.toFixed(2)} bps` : null,
       Number.isFinite(trade.entryWaitMs) ? `入场等待 ${(trade.entryWaitMs / 1000).toFixed(1)} 秒` : null,
       trade.entryCancellationReason ? `撤单原因 ${trade.entryCancellationReason}` : null,
+      trade.entryFactStatus ? `成交事实 ${trade.entryFactStatus} · ${trade.entryFactSource ?? trade.entryFactReason ?? "来源未知"}` : null,
+      Number.isFinite(trade.actualRisk) ? `初始实际风险 ${pnlFormatter.format(trade.actualRisk)} U（不等于保证金或保证最大亏损）` : trade.entryFactStatus ? "初始实际风险未知；净R不作确认" : null,
       Number.isFinite(trade.netR) ? `净结果 ${trade.netR >= 0 ? "+" : ""}${trade.netR.toFixed(3)}R` : null,
       Number.isFinite(trade.mfeR) && Number.isFinite(trade.maeR) ? `持仓波动 MFE ${trade.mfeR.toFixed(3)}R · MAE ${trade.maeR.toFixed(3)}R` : null,
+      trade.excursionCoverage ? `路径覆盖 ${trade.excursionCoverage} · ${trade.excursionSource ?? trade.excursionReason ?? "来源未知"}；不代表完整行情路径` : null,
       Number.isFinite(trade.entrySlippageCost) ? `入场滑点影响 ${signedMoney(-trade.entrySlippageCost)}` : null,
       Number.isFinite(trade.fundingPnl) ? `资金费 ${signedMoney(trade.fundingPnl)}` : null,
       trade.entryOrderId ? `Binance 入场订单 ${trade.entryOrderId}` : null,
@@ -401,18 +404,30 @@ function renderPerformance(performance, executionSummary = chartState.executionS
   });
 }
 
+function coverageLabel(coverage) {
+  if (!coverage || !Number.isFinite(coverage.total) || !Number.isFinite(coverage.valid)) return "覆盖未知";
+  const percent = Number.isFinite(coverage.coverage) ? `${(coverage.coverage * 100).toFixed(1)}%` : "—";
+  return `${coverage.valid}/${coverage.total} 有效 · 缺失 ${coverage.missing ?? "—"} · ${percent}`;
+}
+
 function renderExperimentPerformance(performance) {
   const progress = performance?.sampleProgress ?? { target: 100, finalized: 0, remaining: 100, completionPercent: 0 };
   const percent = Number.isFinite(Number(progress.completionPercent)) ? Math.max(0, Math.min(100, Number(progress.completionPercent))) : 0;
   elements.sampleProgressText.textContent = `${progress.finalized ?? 0} / ${progress.target ?? 100}`;
   elements.sampleProgressBar.style.width = `${percent}%`;
-  elements.sampleValidationStatus.textContent = performance?.validationGate?.eligible
-    ? "100笔门槛已满足，等待样本外复核"
-    : `还需 ${progress.remaining ?? 100} 笔已结算样本 · 当前仅作观察`;
+  const gate = performance?.validationGate;
+  const evidence = performance?.coverage?.netR;
+  const blockers = [];
+  if (gate?.checks?.completeNetR === false) blockers.push(`净R证据不完整（${coverageLabel(evidence)}）`);
+  if (gate?.checks?.completeNetPnl === false) blockers.push("仍有已平仓账务未结算");
+  if ((progress.remaining ?? 100) > 0) blockers.push(`还需 ${progress.remaining ?? 100} 笔已结算样本`);
+  elements.sampleValidationStatus.textContent = gate?.eligible
+    ? "样本与统计门槛已满足，等待样本外复核；不代表实盘准入"
+    : `${blockers.length ? blockers.join(" · ") : "统计门槛未通过"} · 当前仅作观察`;
   const formatSummaryCard = (item) => `<article>
     <span>${escapeHtml(item.label)}</span>
     <strong>${item.finalizedTradeCount ?? 0} 笔</strong>
-    <small>胜率 ${Number.isFinite(item.winRate) ? `${(item.winRate * 100).toFixed(1)}%` : "—"} · 平均 ${Number.isFinite(item.averageNetR) ? `${item.averageNetR.toFixed(3)}R` : "—"} · PF ${Number.isFinite(item.profitFactor) ? item.profitFactor.toFixed(2) : "—"}</small>
+    <small>胜率 ${Number.isFinite(item.winRate) ? `${(item.winRate * 100).toFixed(1)}%` : "—"} · 平均 ${Number.isFinite(item.averageNetR) ? `${item.averageNetR.toFixed(3)}R` : "—"} · PF ${Number.isFinite(item.profitFactor) ? item.profitFactor.toFixed(2) : "—"}<br>净R ${escapeHtml(coverageLabel(item.coverage?.netR))}</small>
   </article>`;
   elements.tierSummary.innerHTML = [...(performance?.tiers ?? []), ...(performance?.costCohorts ?? [])].map(formatSummaryCard).join("");
   elements.segmentSummary.innerHTML = (performance?.segments ?? []).map(formatSummaryCard).join("");
@@ -421,10 +436,10 @@ function renderExperimentPerformance(performance) {
 function renderResearchAttribution(performance) {
   const research = performance?.researchAttribution ?? {};
   const excursion = research.excursion ?? {};
-  const percent = (value) => Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(1)}%` : "—";
-  const duration = (value) => Number.isFinite(Number(value)) ? `${(Number(value) / 60_000).toFixed(1)} 分钟` : "—";
+  const percent = (value) => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
+  const duration = (value) => Number.isFinite(value) ? `${(value / 60_000).toFixed(1)} 分钟` : "—";
   elements.excursionResearchNote.textContent = excursion.closedTrades
-    ? `已结算 ${excursion.closedTrades} 笔 · 止损样本 ${excursion.stopTrades ?? 0} 笔 · 本区仅用于判断入场与出场问题，不改变主绩效口径。`
+    ? `已平仓 ${excursion.closedTrades} 笔 · 止损样本 ${excursion.stopTrades ?? 0} 笔 · MFE ${coverageLabel(excursion.coverage?.mfeR)} · MAE ${coverageLabel(excursion.coverage?.maeR)}。覆盖率仅表示指标可用，不代表完整行情路径；仅用于研究。`
     : "等待已结算交易形成 MFE / MAE 研究样本。";
   const metrics = [
     ["止损单 MFE 中位数", Number.isFinite(excursion.stopMedianMfeR) ? `${excursion.stopMedianMfeR.toFixed(3)}R` : "—"],
@@ -445,7 +460,7 @@ function renderResearchAttribution(performance) {
     ? combinations.slice(0, 12).map((item) => `<article>
       <span>${escapeHtml(item.combination)}</span>
       <strong>${item.trades} 笔 · ${escapeHtml(item.sampleStatus)}</strong>
-      <small>胜率 ${percent(item.winRate)} · 平均 ${Number.isFinite(item.avgNetR) ? `${item.avgNetR.toFixed(3)}R` : "—"} · PF ${Number.isFinite(item.profitFactor) ? item.profitFactor.toFixed(2) : "—"}<br>MFE ${Number.isFinite(item.avgMfeR) ? item.avgMfeR.toFixed(2) : "—"}R · MAE ${Number.isFinite(item.avgMaeR) ? item.avgMaeR.toFixed(2) : "—"}R · 成本 ${Number.isFinite(item.avgCostR) ? item.avgCostR.toFixed(3) : "—"}R · 持仓 ${Number.isFinite(item.avgHoldingMinutes) ? item.avgHoldingMinutes.toFixed(1) : "—"}分钟</small>
+      <small>胜率 ${percent(item.winRate)} · 平均 ${Number.isFinite(item.avgNetR) ? `${item.avgNetR.toFixed(3)}R` : "—"} · PF ${Number.isFinite(item.profitFactor) ? item.profitFactor.toFixed(2) : "—"}<br>净PnL ${escapeHtml(coverageLabel(item.coverage?.netPnl))}<br>净R ${escapeHtml(coverageLabel(item.coverage?.netR))}<br>MFE ${Number.isFinite(item.avgMfeR) ? item.avgMfeR.toFixed(2) : "—"}R · MAE ${Number.isFinite(item.avgMaeR) ? item.avgMaeR.toFixed(2) : "—"}R · 成本 ${Number.isFinite(item.avgCostR) ? item.avgCostR.toFixed(3) : "—"}R · 持仓 ${Number.isFinite(item.avgHoldingMinutes) ? item.avgHoldingMinutes.toFixed(1) : "—"}分钟<br>MFE ${escapeHtml(coverageLabel(item.coverage?.mfeR))} · MAE ${escapeHtml(coverageLabel(item.coverage?.maeR))}<br>组内独立最大回撤 ${Number.isFinite(item.groupMaxDrawdownR) ? `${item.groupMaxDrawdownR.toFixed(3)}R` : "—"}（不可相加为组合贡献）</small>
     </article>`).join("")
     : '<div class="empty-state">等待来源组合形成已结算样本</div>';
 }

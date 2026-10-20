@@ -1,4 +1,4 @@
-import { buildExcursionAttribution, buildOpportunitySourceAttribution } from "./research-attribution.js";
+import { buildExcursionAttribution, buildOpportunitySourceAttribution, tradeMetricCoverage, metricCoverage } from "./research-attribution.js";
 
 const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 
@@ -103,7 +103,7 @@ export function buildExecutionSummary(trades = []) {
 }
 
 function summarizeTrades(trades, pendingTrades = [], identity = {}) {
-  const netValues = trades.map((trade) => finiteNumber(trade.netPnl, 0));
+  const netValues = trades.map((trade) => finiteNumber(trade.netPnl)).filter((value) => value !== null);
   const netRValues = trades.map((trade) => finiteNumber(trade.netR)).filter((value) => value !== null);
   const grossProfit = netValues.filter((value) => value > 0).reduce((sum, value) => sum + value, 0);
   const grossLoss = Math.abs(netValues.filter((value) => value < 0).reduce((sum, value) => sum + value, 0));
@@ -113,12 +113,18 @@ function summarizeTrades(trades, pendingTrades = [], identity = {}) {
     ...identity,
     finalizedTradeCount: trades.length,
     pendingTradeCount: pendingTrades.length,
+    coverage: {
+      ...tradeMetricCoverage(trades),
+      netPnl: metricCoverage(trades.map((trade) => trade.netPnl)),
+      netR: metricCoverage(trades.map((trade) => trade.netR)),
+    },
     wins,
     losses,
-    winRate: trades.length ? wins / trades.length : 0,
-    totalNetPnl: netValues.reduce((sum, value) => sum + value, 0),
-    averageNetR: netRValues.length ? netRValues.reduce((sum, value) => sum + value, 0) / netRValues.length : 0,
-    profitFactor: grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? null : 0,
+    winRate: netValues.length ? wins / netValues.length : null,
+    totalNetPnl: netValues.length ? netValues.reduce((sum, value) => sum + value, 0) : null,
+    averageNetR: netRValues.length ? netRValues.reduce((sum, value) => sum + value, 0) / netRValues.length : null,
+    profitFactor: grossLoss > 0 ? grossProfit / grossLoss : null,
+    profitFactorReason: grossLoss > 0 ? null : netValues.length ? "NO_LOSSES" : "NO_VALID_NET_PNL",
   };
 }
 
@@ -213,6 +219,8 @@ export function buildStrategyPerformance(trades = [], {
   const target = Math.max(1, Math.trunc(finiteNumber(sampleTarget, 100)));
   const gateChecks = {
     minimumSamples: finalizedTrades.length >= target,
+    completeNetR: finalizedTrades.length > 0 && overall.coverage.netR.missing === 0,
+    completeNetPnl: eligibleClosedTrades.length > 0 && finalizedTrades.length === eligibleClosedTrades.length,
     positiveAverageNetR: overall.averageNetR > 0,
     profitFactor: Number.isFinite(overall.profitFactor) && overall.profitFactor >= 1.2,
     maxDrawdown: maxDrawdownPercent < 10,
@@ -230,7 +238,11 @@ export function buildStrategyPerformance(trades = [], {
     losses,
     winRate: overall.winRate,
     averageNetR: overall.averageNetR,
+    coverage: overall.coverage,
+    closedTradeCoverage: tradeMetricCoverage(eligibleClosedTrades),
+    eligibleClosedTradeCount: eligibleClosedTrades.length,
     profitFactor: overall.profitFactor,
+    profitFactorReason: overall.profitFactorReason,
     maxDrawdownPercent,
     segments,
     tiers,
@@ -241,14 +253,24 @@ export function buildStrategyPerformance(trades = [], {
       remaining: Math.max(0, target - finalizedTrades.length),
       completionPercent: Math.min(100, (finalizedTrades.length / target) * 100),
     },
+    evidenceProgress: {
+      eligibleClosed: eligibleClosedTrades.length,
+      finalizedNetPnl: finalizedTrades.length,
+      pendingClosedAccounting: accountingPendingTrades.length,
+      validNetR: overall.coverage.netR.valid,
+      missingNetR: overall.coverage.netR.missing,
+      additionalFinalizedSamplesNeeded: Math.max(0, target - finalizedTrades.length),
+      complete: gateChecks.completeNetR && gateChecks.completeNetPnl,
+    },
     validationGate: {
+      purpose: "OUT_OF_SAMPLE_REVIEW_ONLY",
       eligible: Object.values(gateChecks).every(Boolean),
       checks: gateChecks,
       note: "达到100笔仅允许进入样本外复核，不等于可以使用真实资金",
     },
     researchAttribution: {
-      excursion: buildExcursionAttribution(finalizedTrades),
-      opportunitySources: buildOpportunitySourceAttribution(finalizedTrades),
+      excursion: buildExcursionAttribution(eligibleClosedTrades),
+      opportunitySources: buildOpportunitySourceAttribution(eligibleClosedTrades),
     },
     points,
   };

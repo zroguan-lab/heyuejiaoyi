@@ -1,0 +1,37 @@
+{
+  "protocolId": "TEAM006_VOLUME_GE_1_R1",
+  "schemaVersion": 1,
+  "registeredAt": "2026-10-17T13:40:30.000Z",
+  "status": "REGISTERED_RESEARCH_ONLY_NOT_DEPLOYED",
+  "environment": "BINANCE_DEMO",
+  "signalModelVersion": "PRE_MOVE_1H_15M_5M_V2_4_3_BOUNDARY_FILTER",
+  "demoStrategyVersion": "PRE_MOVE_1H_15M_5M_V2_4_3_BOUNDARY_FILTER_DEMO_20261015",
+  "performanceEpochId": "V2.4.3-20261015203537",
+  "baseline": "Unchanged V2.4.3 eligible decisions; signal and execution constraints preserved",
+  "variable": {
+    "name": "strategy_volume_acceleration",
+    "semanticSource": "candidate.preMove.volumeAcceleration",
+    "operator": ">=",
+    "threshold": 1,
+    "reason": "Natural ratio-to-baseline comparison, not a fitted threshold"
+  },
+  "frozen": ["score", "signalEligibility", "marketRegime", "boundaryAndSourceFilters", "costGate", "entryOrderPolicy", "stopLoss", "takeProfit1", "takeProfit2", "breakEven", "positionSizing", "leverage"],
+  "population": "All immutable forward shadow decisions after registration, not only executed or settled signals; explicit epoch/model/version matching required",
+  "outcomeScope": "Formal matched execution cohort diagnostics only until rejected/unfilled candidate paths and comparable execution costs are verifiable",
+  "historicalDataPolicy": "No backfill from mutable signals/shadow rows; no holdout/sealed data; no old extrema as executable outcomes",
+  "missingPolicy": "Unknown fields remain missing; unfilled/open/censored outcomes are not zero; invalid hashes and future timestamps excluded with reasons",
+  "review": {
+    "initialCheckpointDays": 7,
+    "checkpointPurpose": "Coverage, execution exceptions and descriptive evidence only; not statistical promotion",
+    "minimumObservationIsNotProof": true,
+    "inference": "Pre-register a fixed evaluation window and event/time-block uncertainty method before claiming superiority; account for overlapping positions, repeated symbols and all attempted hypotheses",
+    "pass": "Positive net expectancy and improvement on untouched time windows, acceptable downside and cost stress; no automatic pass from sample count, PF or win rate alone",
+    "stop": "Ambiguous provenance, missing executable paths or unresolved execution contamination blocks causal PnL comparison, not ordinary descriptive reporting"
+  },
+  "orderSubmissionAllowed": false,
+  "liveStrategyModificationAllowed": false,
+  "otherHypotheses": [
+    { "name": "snapshot_age", "status": "REGISTERED_BACKLOG_NOT_ACTIVE", "note": "Separate snapshot age from candle-close age and unknown upstream receive time" },
+    { "name": "directional_boundary_distance", "status": "REGISTERED_BACKLOG_NOT_ACTIVE", "note": "Do not substitute radar nearestBoundaryAtr or fit a cutoff on the seven discovery trades" }
+  ]
+}

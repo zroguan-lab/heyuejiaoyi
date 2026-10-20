@@ -2,6 +2,60 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { buildExecutionSummary, buildStrategyPerformance } from "../src/presentation/strategy-performance.js";
 
+test("100笔只有1笔有效R不构成完整R证据，PnL仍独立结算", () => {
+  const rows = Array.from({ length: 100 }, (_, index) => ({
+    sourceType: "SIGNAL", status: "CLOSED", accountingComplete: true,
+    closedAt: 1_790_000_000_000, netPnl: index === 0 ? -1 : 2,
+    netR: index === 0 ? 1 : null,
+  }));
+  const result = buildStrategyPerformance(rows, { now: 1_790_000_000_000 });
+  assert.equal(result.totalNetPnl, 197);
+  assert.equal(result.averageNetR, 1);
+  assert.deepEqual(result.coverage.netR, { total: 100, valid: 1, missing: 99, coverage: 0.01 });
+  assert.equal(result.validationGate.checks.completeNetR, false);
+  assert.equal(result.validationGate.eligible, false);
+  assert.equal(result.sampleProgress.remaining, 0);
+  assert.equal(result.evidenceProgress.missingNetR, 99);
+  assert.equal(result.evidenceProgress.complete, false);
+});
+
+test("最终结算分母与eligible CLOSED分母分离，开放与排除记录均不混入", () => {
+  const base = { sourceType: "SIGNAL", status: "CLOSED", accountingComplete: true, closedAt: 1_790_000_000_000, netPnl: 2, netR: 1 };
+  const result = buildStrategyPerformance([
+    base,
+    { ...base, netPnl: null, netR: null },
+    { ...base, accountingComplete: false },
+    { ...base, status: "OPEN_PROTECTED" },
+    { ...base, performanceEligible: false },
+    { ...base, sourceType: "OPERATOR_CANARY" },
+  ], { now: base.closedAt, sampleTarget: 1 });
+  assert.equal(result.eligibleClosedTradeCount, 3);
+  assert.equal(result.finalizedTradeCount, 1);
+  assert.equal(result.pendingTradeCount, 3);
+  assert.deepEqual(result.coverage.netPnl, { total: 1, valid: 1, missing: 0, coverage: 1 });
+  assert.deepEqual(result.closedTradeCoverage.netPnl, { total: 3, valid: 2, missing: 1, coverage: 2 / 3 });
+  assert.equal(result.researchAttribution.opportunitySources.closedTrades, 3);
+  assert.equal(result.validationGate.checks.completeNetR, true);
+  assert.equal(result.validationGate.checks.completeNetPnl, false);
+  assert.equal(result.evidenceProgress.pendingClosedAccounting, 2);
+  assert.equal(result.evidenceProgress.complete, false);
+});
+
+test("空样本与真实0区分，缺PnL不进入收益或胜率分母", () => {
+  const empty = buildStrategyPerformance([], { now: 1_790_000_000_000 });
+  assert.equal(empty.averageNetR, null);
+  assert.equal(empty.winRate, null);
+  assert.equal(empty.profitFactor, null);
+  assert.equal(empty.coverage.netR.coverage, null);
+  const base = { sourceType: "SIGNAL", status: "CLOSED", accountingComplete: true, closedAt: 1_790_000_000_000 };
+  const result = buildStrategyPerformance([{ ...base, netPnl: 0, netR: 0 }, { ...base, netPnl: null }], { now: base.closedAt });
+  assert.equal(result.averageNetR, 0);
+  assert.equal(result.finalizedTradeCount, 1);
+  assert.equal(result.winRate, 0);
+  assert.equal(result.closedTradeCoverage.netPnl.missing, 1);
+  assert.equal(result.validationGate.checks.completeNetPnl, false);
+});
+
 test("策略权益按北京时间平仓日聚合净盈亏并补齐无交易日期", () => {
   const performance = buildStrategyPerformance([
     {

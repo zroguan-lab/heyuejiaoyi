@@ -1,0 +1,151 @@
+{
+  "task": "TEAM-006",
+  "asOf": "2026-10-17T14:03:51Z",
+  "timezone": "Asia/Shanghai",
+  "verdict": "OFFLINE_VERIFIED_NOT_DEPLOYED",
+  "headReference": "cb957ed132679076d3cbccefafefa1c660539c35",
+  "worktree": "Uncommitted; contains pre-existing TEAM-003 changes. HEAD alone is not a safe rollback of TEAM-006.",
+  "tests": {
+    "latestFull": {
+      "tests": 326,
+      "pass": 326,
+      "fail": 0,
+      "skipped": 0,
+      "rootExitCode": 0,
+      "independentQa": true
+    },
+    "focused": {
+      "executorAndOwnership": 55,
+      "coordinatorAndResearchBeforeFinalTpPatch": 35,
+      "researchIndependent": 16,
+      "storeAndSnapshotDataEngineer": 32
+    },
+    "syntax": "npm run check and explicit node --check passed; final TP patch separately checked",
+    "diffCheck": "PASS; CRLF normalization warnings only",
+    "environmentFailure": "Initial sandbox full run failed EPERM temporary catalog rename and EACCES local test HTTP; identical suite passed outside sandbox. No real trading service started.",
+    "historicalFailures": [
+      "Execution engineer first iteration 35/36 before audit event compatibility fix.",
+      "Research 11/12 before fixing colliding fixture snapshot IDs; premature 12/12 statement was corrected.",
+      "Research cross-run conflict regressions first 14/16, then 16/16 after implementation.",
+      "325/325 full pass did not cover subsequent OPEN_PROTECTED TP failure; new counterexample failed before minimal fix, final full pass 326/326."
+    ]
+  },
+  "runtimeResearchRead": {
+    "observedAt": "2026-10-17T14:00:52.831Z",
+    "status": "NOT_DEPLOYED_SNAPSHOT_SCHEMA_ABSENT",
+    "forwardSnapshotCount": null,
+    "orderSubmissionAllowed": false,
+    "promotionAllowed": false
+  },
+  "protocol": {
+    "id": "TEAM006_VOLUME_GE_1_R1",
+    "declaredRegisteredAt": "2026-10-17T13:40:30.000Z",
+    "canonicalSha256": "757d5e734e7a01092ee78f1842f7bab5842433f4afac232539f7970171c8d894",
+    "fileSha256": "42211882e22223414eca34a3c98e6becdc1b2d12d92aa1be19fec7cb910ceddf",
+    "fingerprintLimitation": "First external acceptance-file retention now; does not independently prove the file was unchanged since its declared registration time.",
+    "variable": "candidate.preMove.volumeAcceleration >= 1",
+    "inference": "DESCRIPTIVE_ONLY; untouched evaluation window and event/block uncertainty method not yet frozen."
+  },
+  "sourceFiles": [
+    {
+      "path": "src/config.js",
+      "sha256": "bcbf14713fdd1972c582bf0894bf576fe3bd89ca6d8abfaf3e154a51100a40b7"
+    },
+    {
+      "path": "src/domain/pre-move-strategy.js",
+      "sha256": "cc5d1c28a87c27401c0ef718be90e7af83435b70be86373629e63556d10f2b8a"
+    },
+    {
+      "path": "src/domain/risk.js",
+      "sha256": "720e55edb0413506a4617f96de9098581da13617f40e2abf6e7ace16cf5a0718"
+    },
+    {
+      "path": "src/domain/market-radar.js",
+      "sha256": "5763f18b77c995195e66afbc2380b398ab090dea656c398eff7ba7f43448af72"
+    },
+    {
+      "path": "src/domain/shadow-v2.js",
+      "sha256": "aaa93be234fee661ce745e8f51e1ef5529b41dc525643e19c38db795f86448f3"
+    },
+    {
+      "path": "src/execution/execution-strategy-source.js",
+      "sha256": "eb5c4ddff8e68af91b943472a0c1dd9f0b605209bc09f1e133e54e4951e85fe1"
+    },
+    {
+      "path": "src/execution/binance-testnet-trading.js",
+      "sha256": "607f7eef04fc4350a9b8e012bf6ba2145b19bd270a90536ba15813b1e5cd47e0"
+    },
+    {
+      "path": "src/execution/canary-plan.js",
+      "sha256": "d789615cca3e3366991568a49f17e6e273612553b8c13794f86cfa55e5ebb102"
+    },
+    {
+      "path": "src/execution/entry-order-policy.js",
+      "sha256": "8428958bd22b10091ef2b418f4c98154490846533e1174ceeb68f11298a86e35"
+    },
+    {
+      "path": "src/application/strategy-execution-coordinator.js",
+      "sha256": "5d90e4906d4622a8b93bab895a9e9d26cf48ca7820649d94ad1f0b145ff624e9"
+    },
+    {
+      "path": "src/execution/testnet-canary-executor.js",
+      "sha256": "98981730cd1e28230966b73d80c17fd19eb9ab4c6b36ee57962028a8f24270d8"
+    },
+    {
+      "path": "src/execution/execution-account-ownership.js",
+      "sha256": "b779b18870a22e0ce934bb86aaefaf981f03b6d5b69e8ce41b3c2be3c9cd05c7"
+    },
+    {
+      "path": "src/infrastructure/research-store.js",
+      "sha256": "e2e0ccac1d63ebd1305845711f59ef67235fd4a99fa962793a57f1ca71f831b5"
+    },
+    {
+      "path": "src/domain/decision-snapshot.js",
+      "sha256": "b68378e60efc1e3b7840c45b0211ec0947ae78bc89a52038f51609b8a567d32d"
+    },
+    {
+      "path": "src/research/single-variable-validation.js",
+      "sha256": "7618d0d35b57fc006a6faf55a7e4345a83377ab743073a7e730e606188269335"
+    },
+    {
+      "path": "test/strategy-execution-coordinator.test.js",
+      "sha256": "ce71d8797eaeae654a6c35c42a8246494b6edfca6f1f3e65c46e5097138719c7"
+    },
+    {
+      "path": "test/testnet-canary-executor.test.js",
+      "sha256": "aa6a398b28cf43e40738504c75769a778d451df8b176d68a0b69fcdade688d20"
+    },
+    {
+      "path": "test/execution-account-ownership.test.js",
+      "sha256": "2aa8ba704d447c49b63944c601b3929321841d9453335df9f454726f08a13661"
+    },
+    {
+      "path": "test/research-store.test.js",
+      "sha256": "bf2e151750e78d3b8cddbec896ab299ac3d0f3df89632ab93f671bf82266a212"
+    },
+    {
+      "path": "test/decision-snapshot.test.js",
+      "sha256": "62e6be9e980fb6148d962a93bfb50474fef37b19a7e2ac0d2040e0e6c5d5f715"
+    },
+    {
+      "path": "test/single-variable-validation.test.js",
+      "sha256": "8ea692fd2ebd2e12e903bb9f4516cfbe8d2dbfcff587550f776bbf75a43598dd"
+    },
+    {
+      "path": "quant-team/research/validate-team-006.mjs",
+      "sha256": "c0d555f0b87c8c4f4d2318442589c4aa8c5baf13ed40eb04920a85b2ece84496"
+    },
+    {
+      "path": "quant-team/research/TEAM-006-volume-confirmation-protocol.json",
+      "sha256": "42211882e22223414eca34a3c98e6becdc1b2d12d92aa1be19fec7cb910ceddf"
+    }
+  ],
+  "limits": [
+    "No deployment or active schema migration.",
+    "No service restart or order operations.",
+    "No real forward sample or profitability validation.",
+    "Upstream receipt gaps remain null; chronology is not freshness.",
+    "Single local Binance Demo account dataset; no inferred shared Funding allocation.",
+    "No holdout/sealed data or credentials read."
+  ]
+}

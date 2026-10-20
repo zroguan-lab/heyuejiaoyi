@@ -7,6 +7,161 @@ import { DatabaseSync } from "node:sqlite";
 import { ResearchStore } from "../src/infrastructure/research-store.js";
 import { createManualTrade } from "../src/domain/trade-lifecycle.js";
 import { V2_EXECUTION_SOURCE } from "../src/execution/execution-strategy-source.js";
+import { buildDecisionSnapshot, verifyDecisionSnapshot } from "../src/domain/decision-snapshot.js";
+
+test("同run只有一份权威入场快照，不同ID或决策时间冲突均原子失败", async () => {
+  const store = new ResearchStore(":memory:");
+  await store.initialize();
+  try {
+    const args = { candidate: { id: "unique-entry-s1", score: 60 }, scope: "ENTRY_PRE_SUBMIT", runId: "unique-run-1",
+      decision: { decidedAt: 10 }, recordedAt: 11 };
+    const original = buildDecisionSnapshot(args);
+    await store.appendDecisionSnapshot(original);
+    assert.deepEqual(await store.appendDecisionSnapshot(structuredClone(original)), original);
+    for (const overrides of [
+      { snapshotId: "another-id" },
+      { decision: { decidedAt: 12 }, recordedAt: 13 },
+    ]) {
+      const conflict = buildDecisionSnapshot({ ...args, ...overrides });
+      assert.notEqual(conflict.snapshotId, original.snapshotId);
+      await assert.rejects(store.appendDecisionSnapshot(conflict), /UNIQUE constraint failed/);
+      assert.equal(await store.getDecisionSnapshot(conflict.snapshotId), null);
+      assert.deepEqual(await store.getDecisionSnapshot(original.snapshotId), original);
+    }
+    assert.equal((await store.listDecisionSnapshots({ scope: "ENTRY_PRE_SUBMIT" })).length, 1);
+    await store.appendDecisionSnapshot(buildDecisionSnapshot({ ...args, runId: "unique-run-2" }));
+    for (const decidedAt of [20, 30]) {
+      await store.appendDecisionSnapshot(buildDecisionSnapshot({ ...args, scope: "SHADOW_DECISION", decision: { decidedAt } }));
+    }
+    assert.equal((await store.listDecisionSnapshots({ scope: "ENTRY_PRE_SUBMIT" })).length, 2);
+    assert.equal((await store.listDecisionSnapshots({ scope: "SHADOW_DECISION" })).length, 2);
+  } finally { store.close(); }
+});
+
+test("不可变快照支持幂等/冲突/过滤读回，DB直接UPDATE DELETE REPLACE均被阻断", async () => {
+  const store = new ResearchStore(":memory:");
+  await store.initialize();
+  try {
+    const args = { candidate: { id: "snapshot-s1", score: 65 }, decision: { decidedAt: 10 }, recordedAt: 11 };
+    const s = buildDecisionSnapshot(args);
+    assert.deepEqual(await store.appendDecisionSnapshot(s), s);
+    assert.deepEqual(await store.appendDecisionSnapshot(structuredClone(s)), s);
+    const conflict = buildDecisionSnapshot({ ...args, candidate: { ...args.candidate, score: 66 } });
+    assert.equal(conflict.snapshotId, s.snapshotId);
+    await assert.rejects(store.appendDecisionSnapshot(conflict), /冲突/);
+    await assert.rejects(store.appendDecisionSnapshot({ ...s, account: {} }), /schema\/hash/);
+    assert.equal(verifyDecisionSnapshot(await store.getDecisionSnapshot(s.snapshotId)), true);
+    assert.equal(await store.getDecisionSnapshot("missing"), null);
+    assert.equal((await store.listDecisionSnapshots({ scope: "SHADOW_DECISION", since: 11, until: 11 })).length, 1);
+    assert.equal((await store.listDecisionSnapshots({ since: 12 })).length, 0);
+    assert.throws(() => store.db.prepare("UPDATE decision_snapshots SET payload='{}'").run(), /immutable/);
+    assert.throws(() => store.db.prepare("DELETE FROM decision_snapshots").run(), /immutable/);
+    assert.throws(() => store.db.prepare("INSERT OR REPLACE INTO decision_snapshots SELECT * FROM decision_snapshots").run(), /already exists/);
+    assert.deepEqual(await store.getDecisionSnapshot(s.snapshotId), s);
+  } finally { store.close(); }
+});
+
+test("入选和拒绝均保存前向事件；mutable交易后续更新不能回写事件，失败原子回滚", async () => {
+  const store = new ResearchStore(":memory:");
+  await store.initialize();
+  try {
+    const c = { id: "immutable-s1", symbol: "BTCUSDT", strategy: "PRE_BREAKOUT", direction: "SHORT", triggerTime: 1,
+      score: 74, preMove: { volumeAcceleration: 1.1 },
+      risk: { valid: true, entry: 100, stopLoss: 101, takeProfit1: 98.5, takeProfit2: 97.5,
+        stopPercent: 1, riskReward1: 1.5, riskReward2: 2.5, riskPerTradePercent: 0.5 },
+      order: { type: "LIMIT", style: "ACTIVE_DYNAMIC", entry: 100, expiresAt: 601, expiryBars: 2 },
+      shadowV2: { mode: "SHADOW_ONLY", orderSubmissionAllowed: false, strategyVersion: "test-v1", score: 60,
+        eligible: false, fixedRiskPlan: { modelVersion: "FIXED_RISK_V1", equity: 500, targetRiskPercent: 0.5,
+          targetRiskAmount: 2.5, stopRate: 0.01, targetNotional: 250, targetMargin: 25,
+          targetQuantity: 2.5, leverage: 10, valid: true } } };
+    await store.saveCandidate(c);
+    await store.setMetadata("active_strategy_performance_epoch", { id: "epoch-test", startedAt: 0 });
+    await store.saveShadowDecision(c, { selected: false, rejectionReason: "FILTERED", decidedAt: 10 });
+    await store.saveShadowDecision(c, { selected: true, decidedAt: 20 });
+    let snapshots = await store.listDecisionSnapshots();
+    assert.equal(snapshots.length, 2);
+    snapshots.sort((a, b) => a.times.decisionTime - b.times.decisionTime);
+    assert.deepEqual(snapshots.map((s) => s.decision.selected), [false, true]);
+    assert.equal(snapshots[0].scores.candidateScore, 74);
+    assert.equal(snapshots[0].scores.evaluationScore, 60);
+    assert.equal(snapshots[0].versions.epochId, "epoch-test");
+    assert.deepEqual(snapshots.map((s) => s.researchPlan.completeness.complete), [true, true]);
+    assert.deepEqual(snapshots.map((s) => s.researchPlan.risk.entry), [100, 100]);
+    assert.deepEqual(snapshots.map((s) => s.researchPlan.fixedRiskPlan.targetQuantity), [2.5, 2.5]);
+    assert.deepEqual(snapshots.map((s) => s.decision.eligible), [false, false]);
+    c.risk.entry = 999;
+    c.order.entry = 999;
+    c.shadowV2.fixedRiskPlan.targetQuantity = 999;
+    await store.saveShadowTrade({ signalId: c.id, status: "CLOSED", result: { netPnl: 999 } });
+    assert.deepEqual((await store.listDecisionSnapshots()).sort((a, b) => a.times.decisionTime - b.times.decisionTime), snapshots);
+    // Same event/time with conflicting content cannot mutate either side.
+    await assert.rejects(store.saveShadowDecision(c, { selected: false, decidedAt: 20 }), /冲突/);
+    assert.equal((await store.getShadowSignal(c.id)).trade.status, "CLOSED");
+    // Mutable-row failure must roll back the already attempted snapshot insert.
+    store.db.exec("CREATE TRIGGER fixture_shadow_failure BEFORE UPDATE ON shadow_signals BEGIN SELECT RAISE(ABORT,'fixture failure'); END");
+    await assert.rejects(store.saveShadowDecision(c, { selected: true, decidedAt: 30 }), /fixture failure/);
+    assert.deepEqual((await store.listDecisionSnapshots()).sort((a, b) => a.times.decisionTime - b.times.decisionTime), snapshots);
+    // Foreign-key failure after snapshot creation also leaves no orphan event.
+    await assert.rejects(store.saveShadowDecision({ ...c, id: "missing-source" }, { decidedAt: 40 }), /FOREIGN KEY/);
+    assert.equal((await store.listDecisionSnapshots()).length, 2);
+  } finally { store.close(); }
+});
+
+test("历史decidedAt不会冒充Store真实采集时间或上游接收时间", async () => {
+  const store = new ResearchStore(":memory:");
+  await store.initialize();
+  try {
+    const c = { id: "historical-time", symbol: "BTCUSDT", strategy: "PRE_BREAKOUT", direction: "SHORT", triggerTime: 1,
+      shadowV2: { mode: "SHADOW_ONLY", orderSubmissionAllowed: false, strategyVersion: "test-v1" } };
+    await store.saveCandidate(c);
+    const before = Date.now();
+    await store.saveShadowDecision(c, { decidedAt: 10 });
+    const after = Date.now();
+    const [s] = await store.listDecisionSnapshots();
+    assert.equal(s.times.decisionTime, 10);
+    assert.ok(s.times.captureTime >= before && s.times.captureTime <= after);
+    assert.equal(s.times.upstreamReceivedAt, null);
+    assert.equal(s.completeness.receivedByDecision, null);
+  } finally { store.close(); }
+});
+
+test("快照不从历史mutable行回填，重复初始化不产生前向样本", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "snapshot-no-backfill-"));
+  const store = new ResearchStore(path.join(directory, "fixture.sqlite"));
+  try {
+    await store.initialize();
+    const c = { id: "legacy-s1", symbol: "BTCUSDT", strategy: "BREAKOUT", direction: "SHORT", triggerTime: 1 };
+    await store.saveCandidate(c);
+    store.db.prepare("INSERT INTO shadow_signals VALUES(?,?,?,?,?,?,?)").run(c.id, "old", "CLOSED", 1, 1, 2, JSON.stringify({ candidate: c, trade: { netPnl: 100 } }));
+    store.close();
+    await store.initialize();
+    assert.deepEqual(await store.listDecisionSnapshots(), []);
+  } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("两个Store连接的相同事件幂等、冲突拒绝；读回对损坏payload失败关闭", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "snapshot-two-connections-"));
+  const first = new ResearchStore(path.join(directory, "fixture.sqlite"));
+  const second = new ResearchStore(first.filePath);
+  try {
+    await first.initialize();
+    await second.initialize();
+    const args = { candidate: { id: "shared-s1", score: 60 }, decision: { decidedAt: 10 }, recordedAt: 11 };
+    const s = buildDecisionSnapshot(args);
+    const saved = await Promise.all([first.appendDecisionSnapshot(s), second.appendDecisionSnapshot(structuredClone(s))]);
+    assert.deepEqual(saved[0], saved[1]);
+    assert.equal((await first.listDecisionSnapshots()).length, 1);
+    await assert.rejects(second.appendDecisionSnapshot(buildDecisionSnapshot({ ...args, candidate: { id: "shared-s1", score: 61 } })), /冲突/);
+    // Deliberate fixture corruption bypassing the trigger simulates damaged storage, never production migration.
+    first.db.exec("DROP TRIGGER decision_snapshots_no_update");
+    first.db.prepare("UPDATE decision_snapshots SET payload=?").run(JSON.stringify({ ...s, symbol: "CORRUPTED" }));
+    await assert.rejects(second.getDecisionSnapshot(s.snapshotId), /完整性/);
+    await assert.rejects(second.listDecisionSnapshots(), /完整性/);
+  } finally {
+    first.close(); second.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("研究数据库持久化候选、模拟交易和手动跟单且严格分账", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "signal-store-"));

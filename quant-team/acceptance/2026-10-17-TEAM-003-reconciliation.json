@@ -1,0 +1,652 @@
+{
+  "observedAt": "2026-10-17T04:29:56.637Z",
+  "scope": "LOCAL_SAVED_FILLS_NOT_EXCHANGE_RECONFIRMATION",
+  "rawRecords": 434,
+  "epoch": "V2.4.3-20261015203537",
+  "included": 7,
+  "separated": 427,
+  "funds": {
+    "realizedPnl": -8.144309999999999,
+    "commission": 0.59843818,
+    "fundingPnl": 0.00807545,
+    "netPnl": -8.73467273
+  },
+  "rawFundsDigest": "169739d425f076e33f28fd5a61cfdafc194dd3672d1ec46bb39844adca12f1e3",
+  "matches": true,
+  "rows": [
+    {
+      "id": "canary-703b404f675cf7",
+      "symbol": "PLAYUSDT",
+      "status": "CLOSED",
+      "entryOrderId": "806295739",
+      "quantity": 5865,
+      "independentEntry": 0.01705,
+      "independentRisk": 0.5278499999999988,
+      "independentNetR": -1.1899444349720594,
+      "projectedEntry": 0.01705,
+      "projectedRisk": 0.5278499999999988,
+      "projectedNetR": -1.1899444349720594,
+      "rawNetPnl": -0.6281121700000001,
+      "projectedNetPnl": -0.6281121700000001,
+      "entryFactStatus": "CONFIRMED",
+      "excursionCoverage": "UNKNOWN",
+      "mfeR": null,
+      "maeR": null,
+      "matches": true
+    },
+    {
+      "id": "canary-7c0c6f8e0a4b91",
+      "symbol": "BCHUSDT",
+      "status": "CANCELED",
+      "entryOrderId": null,
+      "quantity": null,
+      "independentEntry": null,
+      "independentRisk": null,
+      "independentNetR": null,
+      "projectedEntry": null,
+      "projectedRisk": null,
+      "projectedNetR": null,
+      "rawNetPnl": null,
+      "projectedNetPnl": null,
+      "entryFactStatus": "UNKNOWN",
+      "excursionCoverage": "UNKNOWN",
+      "mfeR": null,
+      "maeR": null,
+      "matches": true
+    },
+    {
+      "id": "canary-529c30a8a5f10f",
+      "symbol": "MUBARAKUSDT",
+      "status": "CLOSED",
+      "entryOrderId": "251303044",
+      "quantity": 1749,
+      "independentEntry": 0.05718000000000001,
+      "independentRisk": 1.2767699999999904,
+      "independentNetR": 0.41430949192102257,
+      "projectedEntry": 0.057179999999999995,
+      "projectedRisk": 1.2767700000000146,
+      "projectedNetR": 0.41430949192101474,
+      "rawNetPnl": 0.52897793,
+      "projectedNetPnl": 0.52897793,
+      "entryFactStatus": "CONFIRMED",
+      "excursionCoverage": "UNKNOWN",
+      "mfeR": null,
+      "maeR": null,
+      "matches": true
+    },
+    {
+      "id": "canary-90c4b8e39e7172",
+      "symbol": "COLLECTUSDT",
+      "status": "CLOSED",
+      "entryOrderId": "287437352",
+      "quantity": 4759,
+      "independentEntry": 0.021020510611473,
+      "independentRisk": 0.521059999999991,
+      "independentNetR": -1.1924867193797464,
+      "projectedEntry": 0.021020510611473,
+      "projectedRisk": 0.521059999999991,
+      "projectedNetR": -1.1924867193797464,
+      "rawNetPnl": -0.6213571299999999,
+      "projectedNetPnl": -0.6213571299999999,
+      "entryFactStatus": "CONFIRMED",
+      "excursionCoverage": "UNKNOWN",
+      "mfeR": null,
+      "maeR": null,
+      "matches": true
+    },
+    {
+      "id": "canary-a6f5c466164460",
+      "symbol": "SIRENUSDT",
+      "status": "CLOSED",
+      "entryOrderId": "1901310942",
+      "quantity": 2862,
+      "independentEntry": 0.03493,
+      "independentRisk": 2.2609800000000173,
+      "independentNetR": -2.5113354430379555,
+      "projectedEntry": 0.03493,
+      "projectedRisk": 2.2609800000000173,
+      "projectedNetR": -2.5113354430379555,
+      "rawNetPnl": -5.67807921,
+      "projectedNetPnl": -5.67807921,
+      "entryFactStatus": "CONFIRMED",
+      "excursionCoverage": "UNKNOWN",
+      "mfeR": null,
+      "maeR": null,
+      "matches": true
+    },
+    {
+      "id": "canary-41694a961f7fe7",
+      "symbol": "BRUSDT",
+      "status": "CLOSED",
+      "entryOrderId": "317330508",
+      "quantity": 300,
+      "independentEntry": 0.33275,
+      "independentRisk": 1.773000000000008,
+      "independentNetR": -0.9230642978003343,
+      "projectedEntry": 0.33275,
+      "projectedRisk": 1.773000000000008,
+      "projectedNetR": -0.9230642978003343,
+      "rawNetPnl": -1.636593,
+      "projectedNetPnl": -1.636593,
+      "entryFactStatus": "CONFIRMED",
+      "excursionCoverage": "UNKNOWN",
+      "mfeR": null,
+      "maeR": null,
+      "matches": true
+    },
+    {
+      "id": "canary-247bccee824bb9",
+      "symbol": "PLAYUSDT",
+      "status": "CLOSED",
+      "entryOrderId": "806486993",
+      "quantity": 5991,
+      "independentEntry": 0.01671,
+      "independentRisk": 0.5391899999999988,
+      "independentNetR": -1.2973333147869979,
+      "projectedEntry": 0.01671,
+      "projectedRisk": 0.5391899999999988,
+      "projectedNetR": -1.2973333147869979,
+      "rawNetPnl": -0.6995091499999999,
+      "projectedNetPnl": -0.6995091499999999,
+      "entryFactStatus": "CONFIRMED",
+      "excursionCoverage": "UNKNOWN",
+      "mfeR": null,
+      "maeR": null,
+      "matches": true
+    }
+  ],
+  "performance": {
+    "finalized": 6,
+    "totalNetPnl": -8.73467273,
+    "averageNetR": -1.1166424530093464,
+    "coverage": {
+      "netPnl": {
+        "total": 6,
+        "valid": 6,
+        "missing": 0,
+        "coverage": 1
+      },
+      "netR": {
+        "total": 6,
+        "valid": 6,
+        "missing": 0,
+        "coverage": 1
+      },
+      "mfeR": {
+        "total": 6,
+        "valid": 0,
+        "missing": 6,
+        "coverage": 0
+      },
+      "maeR": {
+        "total": 6,
+        "valid": 0,
+        "missing": 6,
+        "coverage": 0
+      },
+      "costR": {
+        "total": 6,
+        "valid": 6,
+        "missing": 0,
+        "coverage": 1
+      },
+      "holdingMinutes": {
+        "total": 6,
+        "valid": 6,
+        "missing": 0,
+        "coverage": 1
+      },
+      "commission": {
+        "total": 6,
+        "valid": 6,
+        "missing": 0,
+        "coverage": 1
+      },
+      "fundingPnl": {
+        "total": 6,
+        "valid": 6,
+        "missing": 0,
+        "coverage": 1
+      },
+      "realizedPnl": {
+        "total": 6,
+        "valid": 6,
+        "missing": 0,
+        "coverage": 1
+      }
+    },
+    "evidenceProgress": {
+      "eligibleClosed": 6,
+      "finalizedNetPnl": 6,
+      "pendingClosedAccounting": 0,
+      "validNetR": 6,
+      "missingNetR": 0,
+      "additionalFinalizedSamplesNeeded": 94,
+      "complete": true
+    },
+    "excursion": {
+      "netPnl": {
+        "total": 6,
+        "valid": 6,
+        "missing": 0,
+        "coverage": 1
+      },
+      "netR": {
+        "total": 6,
+        "valid": 6,
+        "missing": 0,
+        "coverage": 1
+      },
+      "mfeR": {
+        "total": 6,
+        "valid": 0,
+        "missing": 6,
+        "coverage": 0
+      },
+      "maeR": {
+        "total": 6,
+        "valid": 0,
+        "missing": 6,
+        "coverage": 0
+      },
+      "costR": {
+        "total": 6,
+        "valid": 6,
+        "missing": 0,
+        "coverage": 1
+      },
+      "holdingMinutes": {
+        "total": 6,
+        "valid": 6,
+        "missing": 0,
+        "coverage": 1
+      },
+      "commission": {
+        "total": 6,
+        "valid": 6,
+        "missing": 0,
+        "coverage": 1
+      },
+      "fundingPnl": {
+        "total": 6,
+        "valid": 6,
+        "missing": 0,
+        "coverage": 1
+      },
+      "realizedPnl": {
+        "total": 6,
+        "valid": 6,
+        "missing": 0,
+        "coverage": 1
+      }
+    },
+    "sourceGroups": [
+      {
+        "combination": "BOUNDARY_PRESSURE + RANK_GAINER + VOLATILITY_COMPRESSION",
+        "trades": 1,
+        "status": "LOW_SAMPLE",
+        "coverage": {
+          "netPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "netR": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "mfeR": {
+            "total": 1,
+            "valid": 0,
+            "missing": 1,
+            "coverage": 0
+          },
+          "maeR": {
+            "total": 1,
+            "valid": 0,
+            "missing": 1,
+            "coverage": 0
+          },
+          "costR": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "holdingMinutes": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "commission": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "fundingPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "realizedPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          }
+        }
+      },
+      {
+        "combination": "BOUNDARY_PRESSURE + RETAINED + VOLATILITY_COMPRESSION",
+        "trades": 1,
+        "status": "LOW_SAMPLE",
+        "coverage": {
+          "netPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "netR": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "mfeR": {
+            "total": 1,
+            "valid": 0,
+            "missing": 1,
+            "coverage": 0
+          },
+          "maeR": {
+            "total": 1,
+            "valid": 0,
+            "missing": 1,
+            "coverage": 0
+          },
+          "costR": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "holdingMinutes": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "commission": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "fundingPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "realizedPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          }
+        }
+      },
+      {
+        "combination": "EARLY_ACCELERATION + RANK_LOSER + VOLUME_SHOCK",
+        "trades": 1,
+        "status": "LOW_SAMPLE",
+        "coverage": {
+          "netPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "netR": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "mfeR": {
+            "total": 1,
+            "valid": 0,
+            "missing": 1,
+            "coverage": 0
+          },
+          "maeR": {
+            "total": 1,
+            "valid": 0,
+            "missing": 1,
+            "coverage": 0
+          },
+          "costR": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "holdingMinutes": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "commission": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "fundingPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "realizedPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          }
+        }
+      },
+      {
+        "combination": "RANK_LOSER + RETAINED + VOLATILITY_COMPRESSION",
+        "trades": 1,
+        "status": "LOW_SAMPLE",
+        "coverage": {
+          "netPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "netR": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "mfeR": {
+            "total": 1,
+            "valid": 0,
+            "missing": 1,
+            "coverage": 0
+          },
+          "maeR": {
+            "total": 1,
+            "valid": 0,
+            "missing": 1,
+            "coverage": 0
+          },
+          "costR": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "holdingMinutes": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "commission": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "fundingPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "realizedPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          }
+        }
+      },
+      {
+        "combination": "RANK_VELOCITY + VOLATILITY_COMPRESSION + VOLUME_SHOCK",
+        "trades": 1,
+        "status": "LOW_SAMPLE",
+        "coverage": {
+          "netPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "netR": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "mfeR": {
+            "total": 1,
+            "valid": 0,
+            "missing": 1,
+            "coverage": 0
+          },
+          "maeR": {
+            "total": 1,
+            "valid": 0,
+            "missing": 1,
+            "coverage": 0
+          },
+          "costR": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "holdingMinutes": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "commission": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "fundingPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "realizedPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          }
+        }
+      },
+      {
+        "combination": "VOLATILITY_COMPRESSION",
+        "trades": 1,
+        "status": "LOW_SAMPLE",
+        "coverage": {
+          "netPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "netR": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "mfeR": {
+            "total": 1,
+            "valid": 0,
+            "missing": 1,
+            "coverage": 0
+          },
+          "maeR": {
+            "total": 1,
+            "valid": 0,
+            "missing": 1,
+            "coverage": 0
+          },
+          "costR": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "holdingMinutes": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "commission": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "fundingPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          },
+          "realizedPnl": {
+            "total": 1,
+            "valid": 1,
+            "missing": 0,
+            "coverage": 1
+          }
+        }
+      }
+    ]
+  }
+}

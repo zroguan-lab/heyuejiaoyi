@@ -503,7 +503,8 @@ test("完整闭环只提交一次入场单，成交后先建止损，再建止�
   assert.deepEqual(client.calls.marginType, ["ISOLATED"]);
   assert.deepEqual(client.calls.leverage, [10]);
 
-  client.order = { ...client.order, status: "FILLED", executedQuantity: 0.0012, averagePrice: 85_000 };
+  // Explicit exchange aggregate evidence for pre-settlement mark observations.
+  client.order = { ...client.order, status: "FILLED", executedQuantity: 0.0012, averagePrice: 85_000, cumulativeQuote: 102 };
   run = await executor.reconcile(run.id);
   assert.equal(run.status, "OPEN_PROTECTED");
   assert.deepEqual(client.calls.placeAlgo.map((item) => item.role), ["stop", "tp2", "tp1"]);
@@ -529,13 +530,334 @@ test("完整闭环只提交一次入场单，成交后先建止损，再建止�
   assert.match(run.result.exitReason, /平掉剩余仓位/);
   assert.deepEqual(run.result.trades.map((trade) => trade.orderId), ["1", "tp2-order"]);
   assert.equal(run.performance.modelVersion, "TRADE_EXCURSION_R1");
-  assert.equal(run.performance.mfeR, 4);
+  // The legacy fake settlement rows have no execution prices/quantities.
+  // Keep only the real fixture mark observation; never synthesize TP2's price.
+  assert.ok(Math.abs(run.performance.mfeR - 0.5) < 1e-8);
   assert.equal(run.performance.maeR, 0);
-  assert.equal(run.performance.mfePrice, 89_000);
-  assert.ok(run.performance.timeToTp2Ms > 0);
-  assert.equal(run.performance.maxFavorableExcursionBeforeExitR, 4);
-  assert.equal(run.performance.maxAdverseExcursionBeforeExitR, 0);
+  assert.equal(run.performance.mfePrice, 85_500);
+  assert.equal(run.performance.timeToTp2Ms, null);
+  assert.equal(run.performance.maxFavorableExcursionBeforeExitR, null);
+  assert.equal(run.performance.maxAdverseExcursionBeforeExitR, null);
   assert.ok(client.calls.cancelAlgo.length >= 2);
+});
+
+async function tpRecoveryFixture() {
+  const time = { now: 2_000_000 };
+  const store = new MemoryStore(signalRecord(time.now));
+  const client = new FakeTradingClient();
+  const executor = new TestnetCanaryExecutor({ client, store, enabled: true, now: () => time.now });
+  const prepared = await executor.prepare("btc-signal-exec");
+  const run = prepared.run;
+  run.status = "PROTECTION_PENDING";
+  run.entryOrder = { orderId: "entry-fixture", executedQuantity: 0.0012, status: "FILLED", updateTime: time.now };
+  client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH" }];
+  return { time, store, client, executor, run };
+}
+
+test("TP2终态不阻断TP1，退避后新ID恢复且planHash/价格比例不变", async () => {
+  const { time, store, client, executor, run } = await tpRecoveryFixture();
+  const before = JSON.stringify(run.plan), planHash = run.planHash;
+  client.algos.set(run.plan.clientIds.takeProfit2, { clientAlgoId: run.plan.clientIds.takeProfit2, algoId: "rejected-tp2", status: "REJECTED", actualQuantity: 0 });
+  await executor.ensureProtection(run, 0.0012);
+  assert.equal(run.status, "PROTECTION_INCOMPLETE");
+  assert.equal(run.protection.takeProfit1.status, "NEW");
+  assert.equal(run.protection.stop.status, "NEW");
+  assert.deepEqual(client.calls.placeAlgo.map(x=>x.role), ["stop", "tp1"]);
+  const count = store.audit.length;
+  for (let i=0;i<10;i++) await executor.ensureProtection(run, 0.0012);
+  assert.equal(store.audit.length, count, "no repeated failure or stop confirmation audit during backoff");
+  time.now += 30_000;
+  await executor.ensureProtection(run, 0.0012);
+  assert.equal(run.status, "OPEN_PROTECTED");
+  assert.equal(run.protection.takeProfit2.clientAlgoId, run.plan.clientIds.takeProfit2 + "-r1");
+  assert.equal(run.protection.takeProfit2.triggerPrice, Number(run.plan.prices.takeProfit2));
+  assert.equal(run.protection.takeProfit1.quantity, 0.0006);
+  assert.equal(JSON.stringify(run.plan), before);
+  assert.equal(run.planHash, planHash);
+  assert.equal(client.calls.cancelAlgo.length, 0);
+  const restarted = new TestnetCanaryExecutor({ client, store, enabled: true, now: () => time.now });
+  const restored = await store.getExecutionRun(run.id);
+  const queried = await restarted.queryKnownProtection(restored);
+  assert.equal(queried.takeProfit2.clientAlgoId, run.plan.clientIds.takeProfit2 + "-r1");
+  await store.saveExecutionRun(restored);
+  client.account.openAlgoOrders=[...client.algos.values()].filter(order=>order.status==="NEW");
+  const reconciled=await restarted.reconcileAll();
+  assert.equal(reconciled.length,1);
+  assert.equal(reconciled[0].status,"OPEN_PROTECTED");
+  assert.equal(await store.getMetadata("testnet_execution_emergency_stop"),null);
+  await restarted.ensureProtection(restored, 0.0012);
+  assert.equal(client.calls.placeAlgo.length, 3);
+});
+
+test("OPEN_PROTECTED后TP终态失效也进入有限恢复，未成交腿不互相阻断",async()=>{
+  for(const [role,status] of [["takeProfit1","REJECTED"],["takeProfit2","CANCELED"]]){
+    const {time,client,executor,run}=await tpRecoveryFixture();
+    await executor.ensureProtection(run,0.0012);
+    assert.equal(run.status,"OPEN_PROTECTED");
+    const before=client.calls.placeAlgo.length,plan=JSON.stringify(run.plan),hash=run.planHash;
+    const id=run.plan.clientIds[role];
+    client.algos.set(id,{...client.algos.get(id),status,actualQuantity:0});
+    Object.assign(run,await executor.reconcile(run.id));
+    assert.equal(run.status,"PROTECTION_INCOMPLETE",`${role} must leave OPEN_PROTECTED when terminal`);
+    assert.equal(run.protection.tpRecovery[role].reason,"TERMINAL_"+status);
+    assert.equal(client.calls.placeAlgo.length,before,"backoff before replacement");
+    time.now+=30_000;Object.assign(run,await executor.reconcile(run.id));
+    assert.equal(run.status,"OPEN_PROTECTED");
+    assert.equal(run.protection[role].clientAlgoId,id+"-r1");
+    assert.equal(client.calls.placeAlgo.length,before+1);
+    assert.equal(client.calls.cancelAlgo.length,0);
+    assert.equal(client.calls.placeAlgo.filter(x=>x.role==='stop').length,1);
+    assert.equal(JSON.stringify(run.plan),plan);
+    assert.equal(run.planHash,hash);
+  }
+});
+
+test("TP1明确-2021拒绝后有界退避重试，保留SL与已活动TP2", async () => {
+  const { time, client, executor, run } = await tpRecoveryFixture();
+  const original = client.placeTakeProfitClose.bind(client);
+  let attempts = 0;
+  client.placeTakeProfitClose = async req => {
+    if (req.quantity !== null && req.quantity !== undefined) {
+      attempts++;
+      throw new BinanceApiError({status:400,code:-2021,message:"Order would immediately trigger."});
+    }
+    return original(req);
+  };
+  await executor.ensureProtection(run, 0.0012);
+  assert.equal(attempts, 1);
+  assert.equal(run.protection.takeProfit2.status, "NEW");
+  for(let i=0;i<8;i++) {time.now += 300_000; await executor.ensureProtection(run,0.0012);}
+  assert.equal(attempts, 4, "one original plus three replacement attempts");
+  assert.equal(run.protection.tpRecovery.takeProfit1.replacements,3);
+  assert.equal(run.protection.tpRecovery.takeProfit1.reason,"RETRY_LIMIT_REACHED");
+  assert.equal(client.calls.cancelAlgo.length,0);
+  assert.equal(client.calls.placeAlgo.filter(x=>x.role==='stop').length,1);
+  assert.equal(client.calls.placeAlgo.filter(x=>x.role==='tp2').length,1);
+});
+
+test("TP未知提交在重启后只查同ID，迟到订单被认领且不盲重发", async () => {
+  const { time, store, client, executor, run } = await tpRecoveryFixture();
+  const original = client.placeTakeProfitClose.bind(client);
+  let attempts = 0;
+  client.placeTakeProfitClose = async req => {
+    if (req.quantity === null) {attempts++; throw new Error("socket timeout");}
+    return original(req);
+  };
+  await executor.ensureProtection(run,0.0012);
+  assert.equal(run.protection.takeProfit1.status,"NEW");
+  assert.equal(run.protection.tpRecovery.takeProfit2.pending,true);
+  const restarted = new TestnetCanaryExecutor({client,store,enabled:true,now:()=>time.now});
+  const restored = await store.getExecutionRun(run.id);
+  for(let i=0;i<4;i++){time.now+=300_000; await restarted.ensureProtection(restored,0.0012);}
+  assert.equal(attempts,1);
+  assert.equal(restored.protection.tpRecovery.takeProfit2.replacements,0);
+  client.algos.set(run.plan.clientIds.takeProfit2,{clientAlgoId:run.plan.clientIds.takeProfit2,algoId:"late",status:"NEW"});
+  await restarted.ensureProtection(restored,0.0012);
+  assert.equal(restored.status,"OPEN_PROTECTED");
+  assert.equal(attempts,1);
+});
+
+test("TP1部分成交或FINISHED不得补发，拒绝TP2仍可独立恢复", async () => {
+  for(const status of ["NEW","FINISHED","CANCELED"]) {
+    const { time, client, executor, run } = await tpRecoveryFixture();
+    client.algos.set(run.plan.clientIds.takeProfit1,{clientAlgoId:run.plan.clientIds.takeProfit1,algoId:"partial-tp1",status,actualQuantity:0.0003,actualOrderId:"tp1-child"});
+    client.algos.set(run.plan.clientIds.takeProfit2,{clientAlgoId:run.plan.clientIds.takeProfit2,algoId:"failed-tp2",status:"REJECTED",actualQuantity:0});
+    await executor.ensureProtection(run,0.0012);time.now+=30_000;
+    await executor.ensureProtection(run,0.0012);
+    assert.equal(client.calls.placeAlgo.filter(x=>x.role==='tp1').length,0);
+    assert.equal(client.calls.placeAlgo.filter(x=>x.role==='tp2').length,1);
+    assert.equal(client.calls.cancelAlgo.length,0);
+  }
+});
+
+test("恢复ID的成交和旧订单均归属本run，无仓时只清理不恢复", async () => {
+  const { time, client, executor, run } = await tpRecoveryFixture();
+  client.algos.set(run.plan.clientIds.takeProfit2,{clientAlgoId:run.plan.clientIds.takeProfit2,algoId:"old-tp2",status:"REJECTED",actualQuantity:0});
+  await executor.ensureProtection(run,0.0012);time.now+=30_000;
+  await executor.ensureProtection(run,0.0012);
+  const replacement = run.protection.tpRecovery.takeProfit2.currentClientId;
+  client.algos.set(replacement,{...client.algos.get(replacement),status:"FINISHED",actualQuantity:0.0012,actualOrderId:"replacement-exit"});
+  const protection = await executor.queryKnownProtection(run);
+  run.protection={...run.protection,...protection};
+  client.listUserTrades=async()=>[
+    {id:"entry",orderId:"entry-fixture",quantity:0.0012,side:"BUY",price:85000,commission:0,realizedPnl:0},
+    {id:"exit",orderId:"replacement-exit",quantity:0.0012,side:"SELL",price:89000,commission:0,realizedPnl:4.8},
+    {id:"foreign",orderId:"external",commission:999,realizedPnl:999},
+  ];
+  const accounting = await executor.collectRunTrades(run);
+  assert.equal(accounting.accountingComplete,true);
+  assert.deepEqual(accounting.trades.map(x=>x.id),["entry","exit"]);
+  assert.equal(executor.buildRunResult(accounting,run).exitRole,"takeProfit2");
+  const before=client.calls.placeAlgo.length;
+  client.account.positions=[];
+  await executor.reconcileProtected(run);
+  assert.equal(client.calls.placeAlgo.length,before);
+  assert.equal(run.status,"CLOSED");
+  assert.equal(run.result.netPnl,4.8);
+});
+
+test("prepare返回真实计划依据深拷贝且reused不回填", async()=>{
+  const clock=2_000_000,store=new MemoryStore(signalRecord(clock)),client=new FakeTradingClient();
+  const executor=new TestnetCanaryExecutor({client,store,enabled:true,now:()=>clock});
+  const prepared=await executor.prepare("btc-signal-exec");
+  assert.equal(prepared.sourceDecisionRecord.trade.entryPrice,Number(prepared.run.plan.prices.entry));
+  prepared.sourceDecisionRecord.trade.entryPrice=1;
+  assert.equal(store.signal.trade.entryPrice,85000);
+  assert.equal(prepared.run.plan.prices.entry,"85000.0");
+  const reused=await executor.prepare("btc-signal-exec");
+  assert.equal(reused.reused,true);
+  assert.equal(reused.sourceDecisionRecord,undefined);
+});
+
+test("FINISHED缺成交量及取消单缺成交量不自动补腿，保留止损", async()=>{
+  for(const status of ["FINISHED","CANCELED","EXPIRED"]) {
+    const {time,client,executor,run}=await tpRecoveryFixture();
+    client.algos.set(run.plan.clientIds.takeProfit2,{clientAlgoId:run.plan.clientIds.takeProfit2,algoId:"uncertain-terminal",status,actualQuantity:null});
+    await executor.ensureProtection(run,0.0012);time.now+=300_000;
+    await executor.ensureProtection(run,0.0012);
+    assert.equal(run.status,"PROTECTION_INCOMPLETE");
+    assert.equal(client.calls.placeAlgo.filter(x=>x.role==='tp2').length,0);
+    assert.equal(client.calls.cancelAlgo.length,0);
+    if(status==='FINISHED') assert.equal(client.calls.placeAlgo.filter(x=>x.role==='tp1').length,0);
+  }
+});
+
+test("TP1先成交后的BE顺序保持，下一轮独立恢复TP2且不重建TP1/原止损",async()=>{
+  const {time,client,executor,run}=await tpRecoveryFixture();
+  await executor.ensureProtection(run,0.0012);
+  const tp1=run.plan.clientIds.takeProfit1,tp2=run.plan.clientIds.takeProfit2;
+  client.algos.set(tp1,{...client.algos.get(tp1),status:"FINISHED",actualQuantity:0.0006,actualOrderId:"tp1-child",updateTime:time.now});
+  client.algos.set(tp2,{...client.algos.get(tp2),status:"REJECTED",actualQuantity:0});
+  client.account.positions=[{symbol:"BTCUSDT",quantity:0.0006,positionSide:"BOTH"}];
+  await executor.reconcileProtected(run);
+  assert.equal(run.status,"TP1_FILLED");
+  assert.equal(run.protection.breakEvenStop.status,"NEW");
+  assert.equal(run.protection.breakEvenStop.triggerPrice,Number(run.plan.prices.entry));
+  assert.equal(run.protection.breakEvenStop.quantity,0.0006);
+  await executor.reconcileProtected(run);
+  assert.equal(run.status,"PROTECTION_INCOMPLETE");
+  const before=client.calls.placeAlgo.length;
+  time.now+=30_000;await executor.reconcileProtected(run);
+  assert.equal(run.status,"TP1_FILLED");
+  assert.equal(client.calls.placeAlgo.length,before+1);
+  assert.equal(run.protection.takeProfit2.status,"NEW");
+  assert.equal(client.calls.placeAlgo.filter(x=>x.role==='tp1').length,1);
+  assert.equal(client.calls.placeAlgo.filter(x=>x.role==='stop').length,2,"original SL plus BE, no restoration of canceled SL");
+  assert.equal(client.calls.cancelAlgo.length,1,"only existing BE transition cancels original SL");
+});
+
+test("TP2已全量成交且仓位快照滞后时不恢复或新增TP1",async()=>{
+  const {client,executor,run}=await tpRecoveryFixture();
+  await executor.ensureProtection(run,0.0012);
+  client.algos.set(run.plan.clientIds.takeProfit2,{...client.algos.get(run.plan.clientIds.takeProfit2),status:"FINISHED",actualQuantity:0.0012,actualOrderId:"tp2-child"});
+  run.status="PROTECTION_INCOMPLETE";
+  const before=client.calls.placeAlgo.length;
+  await executor.reconcileProtected(run);
+  assert.equal(client.calls.placeAlgo.length,before);
+  assert.equal(client.calls.cancelAlgo.length,0);
+});
+
+test("TP查询异常不阻断另一腿，历史缺失订单按未知保留不盲发",async()=>{
+  const {client,executor,run}=await tpRecoveryFixture();
+  const query=client.queryAlgoOrder.bind(client);
+  client.queryAlgoOrder=async id=>{
+    if(id===run.plan.clientIds.takeProfit2)throw new Error("query timeout");
+    return query(id);
+  };
+  await executor.ensureProtection(run,0.0012);
+  assert.equal(run.protection.takeProfit1.status,"NEW");
+  assert.equal(run.protection.tpRecovery.takeProfit2.reason,"QUERY_UNKNOWN");
+  assert.equal(client.calls.placeAlgo.filter(x=>x.role==='tp2').length,0);
+  assert.equal(client.calls.cancelAlgo.length,0);
+  const legacy=structuredClone(run);delete legacy.protection.tpRecovery;
+  legacy.protection.takeProfit1=null;
+  client.algos.delete(run.plan.clientIds.takeProfit1);
+  client.queryAlgoOrder=query;
+  const before=client.calls.placeAlgo.length;
+  await executor.ensureProtection(legacy,0.0012);
+  assert.equal(legacy.protection.tpRecovery.takeProfit1.reason,"SUBMISSION_UNKNOWN_QUERY_ONLY");
+  assert.equal(client.calls.placeAlgo.length,before);
+});
+
+test("统计成交证据UNKNOWN不改变正常成交准入、保护请求顺序或状态迁移", async () => {
+  const groups = [];
+  for (const confirmed of [true, false]) {
+    const clock = 2_000_000;
+    const store = new MemoryStore(signalRecord(clock));
+    const client = new FakeTradingClient();
+    const requests = [];
+    for (const method of ["placeStopClose", "placeTakeProfitClose"]) {
+      const original = client[method].bind(client);
+      client[method] = async (request) => {
+        requests.push({ method, request: structuredClone(request) });
+        return original(request);
+      };
+    }
+    const executor = new TestnetCanaryExecutor({ client, store, enabled: true, now: () => clock });
+    const transitions = [];
+    executor.on("execution", run => transitions.push(run.status));
+    const prepared = await executor.prepare("btc-signal-exec");
+    let run = await executor.execute(prepared.run.id, prepared.confirmationCode);
+    client.order = { ...client.order, status: "FILLED", executedQuantity: 0.0012, updateTime: clock,
+      averagePrice: confirmed ? 85000 : null, cumulativeQuote: confirmed ? 102 : null };
+    client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH", markPrice: 85000 }];
+    run = await executor.reconcile(run.id);
+    assert.equal(run.executionMetrics.entryFactStatus, confirmed ? "CONFIRMED" : "UNKNOWN");
+    assert.equal(run.executionMetrics.fillAccepted, true);
+    assert.equal(run.executionMetrics.fillRatio, 1);
+    assert.equal(run.status, "OPEN_PROTECTED");
+    assert.deepEqual(client.calls.placeAlgo.map(o => o.role), ["stop", "tp2", "tp1"]);
+    assert.equal(client.calls.placeEntry, 1);
+    assert.equal(client.calls.cancelEntry, 0);
+    const entryRequest = structuredClone(client.calls.lastEntryRequest);
+    const fillAccepted = run.executionMetrics.fillAccepted;
+    // A second protection reconciliation must also remain equivalent; UNKNOWN
+    // cannot silently freeze new protection or initiate an emergency close.
+    run = await executor.reconcile(run.id);
+    assert.equal(run.status, "OPEN_PROTECTED");
+    assert.equal(run.executionMetrics.entryFactStatus, confirmed ? "CONFIRMED" : "UNKNOWN");
+    assert.equal(await store.getMetadata("testnet_execution_emergency_stop"), null);
+    groups.push({ transitions, requests, entryRequest, fillAccepted,
+      fillRatio: run.executionMetrics.fillRatio, eligible: run.performanceEligible,
+      exception: run.executionException, protection: run.protection, calls: client.calls });
+  }
+  assert.deepEqual(groups[0], groups[1]);
+});
+
+test("结算逐笔观察乱序部分退出成交，虚拟TP价格不参与极值", async () => {
+  const results = [];
+  for (const reversed of [false, true]) {
+    const clock = 2_000_000;
+    const store = new MemoryStore(signalRecord(clock));
+    const client = new FakeTradingClient();
+    const executor = new TestnetCanaryExecutor({ client, store, enabled: true, now: () => clock });
+    const prepared = await executor.prepare("btc-signal-exec");
+    let run = await executor.execute(prepared.run.id, prepared.confirmationCode);
+    client.order = { ...client.order, status: "FILLED", executedQuantity: 0.0012, averagePrice: 85_000, updateTime: clock };
+    run = await executor.reconcile(run.id);
+    for (const [role, id] of [["takeProfit1", "tp1-real"], ["takeProfit2", "tp2-real"]]) {
+      const key = run.plan.clientIds[role];
+      client.algos.set(key, { ...client.algos.get(key), status: "FINISHED", actualQuantity: 0.0006, actualOrderId: id });
+    }
+    const rows = [
+      { id: "e", orderId: "1", side: "BUY", price: 85000, quantity: 0.0012, time: clock, commission: 0, realizedPnl: 0 },
+      { id: "a", orderId: "tp1-real", side: "SELL", price: 87000, quantity: 0.0003, time: clock + 100, commission: 0, realizedPnl: 0 },
+      { id: "b", orderId: "tp1-real", side: "SELL", price: 84500, quantity: 0.0003, time: clock + 200, commission: 0, realizedPnl: 0 },
+      { id: "c", orderId: "tp2-real", side: "SELL", price: 88000, quantity: 0.0006, time: clock + 300, commission: 0, realizedPnl: 0 },
+    ];
+    client.listUserTrades = async () => reversed ? [...rows].reverse() : rows;
+    client.account.positions = [];
+    run = await executor.reconcile(run.id);
+    assert.equal(run.status, "CLOSED");
+    assert.equal(run.performance.observedPriceHigh, 88000);
+    assert.equal(run.performance.observedPriceLow, 84500);
+    assert.equal(run.performance.timeToMfeMs, 300);
+    assert.equal(run.performance.timeToMaeMs, 200);
+    assert.equal(run.performance.closedAt, clock + 300);
+    assert.equal(run.performance.maeBeforeTp1R, null);
+    results.push(run.performance);
+  }
+  assert.deepEqual(results[0], results[1]);
 });
 
 test("低于95%的部分成交立即撤余单、建立保护、排除绩效并受控平仓", async () => {

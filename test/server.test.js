@@ -14,13 +14,14 @@ test("研究API返回组合状态并允许记录手动跟单但不会暴露执�
   const executionRuns = [{
     id: "run-1", signalId: "s1", sourceType: "SIGNAL", performanceEligible: true,
     symbol: "BTCUSDT", status: "CLOSED", updatedAt: exitTime + 100,
-    plan: { direction: "LONG", entrySide: "BUY", exitSide: "SELL", quantity: "0.001", leverage: 10, marginMode: "ISOLATED", marginTarget: 10, prices: { entry: "100000" } },
+    plan: { direction: "LONG", entrySide: "BUY", exitSide: "SELL", quantity: "0.001", leverage: 10, marginMode: "ISOLATED", marginTarget: 10, prices: { entry: "100000", stopLoss: "99000" } },
     entryOrder: { orderId: "entry-1", executedQuantity: 0.001, updateTime: entryTime },
+    operatorCloseOrder: { orderId: "exit-1" },
     result: {
-      commission: 0.08, realizedPnl: 0.2, netPnl: 0.12, accountingComplete: true,
+      commission: 0.08, realizedPnl: 0.2, fundingPnl: 0, netPnl: 0.12, accountingComplete: true,
       trades: [
-        { side: "BUY", price: 100_000, quantity: 0.001, quoteQuantity: 100, time: entryTime },
-        { side: "SELL", price: 100_200, quantity: 0.001, quoteQuantity: 100.2, time: exitTime },
+        { orderId: "entry-1", symbol: "BTCUSDT", side: "BUY", price: 100_000, quantity: 0.001, quoteQuantity: 100, time: entryTime },
+        { orderId: "exit-1", symbol: "BTCUSDT", side: "SELL", price: 100_200, quantity: 0.001, quoteQuantity: 100.2, time: exitTime },
       ],
     },
   }, {
@@ -86,6 +87,11 @@ test("研究API返回组合状态并允许记录手动跟单但不会暴露执�
     assert.equal(signals.demoTrades[0].strategy, "BREAKOUT");
     assert.equal(signals.demoTrades[0].notional, 100);
     assert.equal(signals.demoTrades[0].netPnl, 0.12);
+    assert.equal(signals.demoTrades[0].entryFactStatus, "CONFIRMED");
+    assert.equal(signals.demoTrades[0].actualRisk, 1);
+    assert.equal(signals.demoTrades[0].netR, 0.12);
+    assert.equal(signals.demoTrades[0].mfeR, null);
+    assert.equal(signals.demoTrades[0].excursionCoverage, "UNKNOWN");
     assert.equal(signals.demoTrades[1].performanceEligible, false);
     assert.equal(signals.demoTrades[1].executionException, "UNPROTECTED_POSITION_AUTO_CLOSE");
     assert.equal(signals.demoTrades[1].error, "止损建立失败后已自动退出");

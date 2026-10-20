@@ -1,0 +1,83 @@
+{
+  "task": "TEAM-011",
+  "capturedAt": 1792429729277,
+  "authority": "BINANCE_DEMO_SIGNED_GET",
+  "networkGuard": {
+    "origin": "https://demo-fapi.binance.com",
+    "method": "GET_ONLY",
+    "responseShapeValidated": true,
+    "credentialsOrSignaturesPersisted": false
+  },
+  "credentialBinding": {
+    "currentCredentialMatchesSavedAttestation": true,
+    "attestationVerifiedAt": 1792426158774,
+    "limitation": "The attestation is later than all four runs and does not prove the credential context at submission time."
+  },
+  "runs": [
+    {
+      "runId": "canary-c4391d56e84765",
+      "symbol": "CHZUSDT",
+      "localStatus": "ACCOUNTING_PENDING",
+      "entryOrderId": "537783514",
+      "orderById": { "found": false, "apiCode": -2013 },
+      "orderByClientId": { "found": false, "apiCode": -2013 },
+      "exactOrderTrades": 0,
+      "entryWindowTrades": 0,
+      "knownAlgoOrdersFound": 0,
+      "currentPositions": 0,
+      "currentOpenOrders": 0,
+      "currentOpenAlgoOrders": 0,
+      "fundingRows": 0
+    },
+    {
+      "runId": "canary-e97a7a9e055072",
+      "symbol": "TIAUSDT",
+      "localStatus": "ACCOUNTING_PENDING",
+      "entryOrderId": "279382500",
+      "orderById": { "found": false, "apiCode": -2013 },
+      "orderByClientId": { "found": false, "apiCode": -2013 },
+      "exactOrderTrades": 0,
+      "entryWindowTrades": 0,
+      "knownAlgoOrdersFound": 0,
+      "currentPositions": 0,
+      "currentOpenOrders": 0,
+      "currentOpenAlgoOrders": 0,
+      "fundingRows": 0
+    },
+    {
+      "runId": "canary-e20009b1aa9f50",
+      "symbol": "MAGICUSDT",
+      "localStatus": "ACCOUNTING_PENDING",
+      "entryOrderId": "263619312",
+      "orderById": { "found": false, "apiCode": -2013 },
+      "orderByClientId": { "found": false, "apiCode": -2013 },
+      "exactOrderTrades": 0,
+      "entryWindowTrades": 0,
+      "knownAlgoOrdersFound": 0,
+      "currentPositions": 0,
+      "currentOpenOrders": 0,
+      "currentOpenAlgoOrders": 0,
+      "fundingRows": 0
+    },
+    {
+      "runId": "canary-5adea23ec1d05c",
+      "symbol": "BUSDT",
+      "localStatus": "ACCOUNTING_PENDING",
+      "entryOrderId": "516933014",
+      "orderById": { "found": false, "apiCode": -2013 },
+      "orderByClientId": { "found": false, "apiCode": -2013 },
+      "exactOrderTrades": 0,
+      "entryWindowTrades": 0,
+      "knownAlgoOrdersFound": 0,
+      "currentPositions": 0,
+      "currentOpenOrders": 0,
+      "currentOpenAlgoOrders": 0,
+      "fundingRows": 0
+    }
+  ],
+  "interpretation": {
+    "fact": "The local FILLED acknowledgements cannot be corroborated by the current authoritative Demo queries.",
+    "inference": "The runs are misclassified as ordinary accounting delay and should enter an entry-fact-conflict workflow.",
+    "unknown": "Whether each order existed at submission time, because per-run credential lineage and immutable response provenance were not recorded."
+  }
+}

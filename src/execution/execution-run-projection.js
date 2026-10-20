@@ -1,4 +1,5 @@
 import { isExecutionSymbol } from "./execution-symbols.js";
+import { executionFillFacts, executionExcursionFacts, ownedExitFills } from "./execution-fill-facts.js";
 import { V1_EXECUTION_SOURCE } from "./execution-strategy-source.js";
 
 const CLOSED_STATUSES = new Set(["CLOSED", "CANCELED", "REJECTED", "FAILED"]);
@@ -9,14 +10,6 @@ function finiteNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-function firstPositiveNumber(...values) {
-  for (const value of values) {
-    const number = finiteNumber(value);
-    if (number !== null && number > 0) return number;
-  }
-  return null;
-}
-
 function sum(items) {
   return items.reduce((total, item) => total + (finiteNumber(item) ?? 0), 0);
 }
@@ -24,9 +17,10 @@ function sum(items) {
 function weightedAverage(trades) {
   const quantity = sum(trades.map((trade) => trade.quantity));
   if (quantity <= 0) return null;
-  const quote = sum(trades.map((trade) => trade.quoteQuantity));
-  if (quote > 0) return quote / quantity;
-  return sum(trades.map((trade) => (finiteNumber(trade.price) ?? 0) * (finiteNumber(trade.quantity) ?? 0))) / quantity;
+  // Owned fills have validated prices and quantities; mixed quote availability
+  // must not divide a partial quote sum by the full executed quantity.
+  return sum(trades.map((trade) => finiteNumber(trade.quoteQuantity)
+    ?? (finiteNumber(trade.price) ?? 0) * (finiteNumber(trade.quantity) ?? 0))) / quantity;
 }
 
 function tradeTime(trade) {
@@ -36,26 +30,16 @@ function tradeTime(trade) {
 export function projectExecutionRun(run, signalRecord = null) {
   if (!run?.id || !isExecutionSymbol(run.symbol) || !run.plan) return null;
   const trades = Array.isArray(run.result?.trades) ? run.result.trades : [];
-  const entryTrades = trades.filter((trade) => trade.side === run.plan.entrySide);
-  const exitTrades = trades.filter((trade) => trade.side === run.plan.exitSide);
-  const entryTradeQuantity = sum(entryTrades.map((trade) => trade.quantity));
-  const executedQuantity = finiteNumber(run.entryOrder?.executedQuantity)
-    ?? (entryTradeQuantity > 0 ? entryTradeQuantity : null);
-  const entryPrice = firstPositiveNumber(
-    weightedAverage(entryTrades),
-    run.entryOrder?.averagePrice,
-    run.entryOrder?.price,
-    run.plan.prices?.entry,
-  );
-  const exitPrice = weightedAverage(exitTrades)
-    ?? finiteNumber(run.operatorCloseOrder?.averagePrice)
-    ?? null;
-  const entryQuote = sum(entryTrades.map((trade) => trade.quoteQuantity));
-  const notional = entryQuote > 0
-    ? entryQuote
-    : entryPrice !== null && executedQuantity !== null && executedQuantity > 0
-      ? entryPrice * executedQuantity
-      : null;
+  const facts = executionFillFacts(run);
+  const excursion = executionExcursionFacts(run, facts);
+  const sameExcursionBasis = excursion.mfeR !== null && run.performance?.factBasis === "ACTUAL_ENTRY_V1"
+    && finiteNumber(run.performance?.entryPrice) === facts.entryPrice;
+  const entryTrades = trades.filter((trade) => run.entryOrder?.orderId != null && String(trade.orderId) === String(run.entryOrder.orderId));
+  const exitTrades = ownedExitFills(run);
+  const executedQuantity = facts.quantity;
+  const entryPrice = facts.entryPrice;
+  const exitPrice = weightedAverage(exitTrades);
+  const notional = facts.notional;
   const leverage = finiteNumber(run.plan.leverage);
   const actualMarginEstimate = notional !== null && leverage !== null && leverage > 0
     ? notional / leverage
@@ -73,27 +57,21 @@ export function projectExecutionRun(run, signalRecord = null) {
     : null;
   const realizedPnl = finiteNumber(run.result?.realizedPnl);
   const commission = finiteNumber(run.result?.commission);
-  const fundingPnl = finiteNumber(run.result?.fundingPnl) ?? 0;
+  const fundingPnl = finiteNumber(run.result?.fundingPnl);
   const netPnl = finiteNumber(run.result?.netPnl)
-    ?? (realizedPnl !== null && commission !== null ? realizedPnl - commission + fundingPnl : null);
+    ?? (realizedPnl !== null && commission !== null && fundingPnl !== null ? realizedPnl - commission + fundingPnl : null);
   const plannedEntryPrice = finiteNumber(run.plan.prices?.entry);
   const plannedRisk = finiteNumber(run.plan.riskAmountEstimate);
   const stopLoss = finiteNumber(run.plan.prices?.stopLoss);
-  const persistedActualRisk = finiteNumber(run.executionMetrics?.actualRiskAmount);
-  const derivedActualRisk = entryPrice !== null && stopLoss !== null && executedQuantity !== null && executedQuantity > 0
-    ? Math.abs(entryPrice - stopLoss) * executedQuantity
-    : null;
-  const actualRisk = persistedActualRisk ?? derivedActualRisk;
-  const riskAmount = actualRisk ?? plannedRisk;
+  const actualRisk = facts.riskAmount;
+  const riskAmount = actualRisk;
   const directionSign = run.plan.direction === "LONG" ? 1 : -1;
   const entrySlippageCost = entryPrice !== null && plannedEntryPrice !== null && executedQuantity !== null
     ? directionSign * (entryPrice - plannedEntryPrice) * executedQuantity
     : null;
   const netR = netPnl !== null && riskAmount !== null && riskAmount > 0 ? netPnl / riskAmount : null;
-  const mfePnl = finiteNumber(run.performance?.mfePnl);
-  const maePnl = finiteNumber(run.performance?.maePnl);
-  const projectedMfeR = finiteNumber(run.performance?.mfeR);
-  const projectedMaeR = finiteNumber(run.performance?.maeR);
+  const mfePnl = excursion.mfePnl;
+  const maePnl = excursion.maePnl;
   const entryReason = run.plan.orderReasons?.entry
     ?? (Array.isArray(candidate?.reasons) ? candidate.reasons[0] ?? null : null);
 
@@ -145,7 +123,8 @@ export function projectExecutionRun(run, signalRecord = null) {
     commission,
     fundingPnl,
     entrySlippageCost,
-    entrySlippageBps: finiteNumber(run.executionMetrics?.slippageBps),
+    entrySlippageBps: entryPrice !== null && plannedEntryPrice > 0
+      ? directionSign * (entryPrice - plannedEntryPrice) / plannedEntryPrice * 10_000 : null,
     entryExecutionMode: run.entryExecution?.mode ?? run.plan.entryPolicy?.mode ?? null,
     entryTimeInForce: run.entryExecution?.timeInForce ?? run.plan.entryPolicy?.timeInForce ?? run.entryOrder?.timeInForce ?? null,
     plannedEntryPrice,
@@ -162,6 +141,13 @@ export function projectExecutionRun(run, signalRecord = null) {
     plannedRisk,
     actualRisk,
     riskAmount,
+    entryFactStatus: facts.status,
+    entryFactSource: facts.source,
+    entryFactReason: facts.reason,
+    excursionSource: excursion.source,
+    excursionCoverage: excursion.coverage,
+    excursionReason: excursion.reason,
+    excursionTimingReason: sameExcursionBasis ? null : "EXCURSION_TIMING_BASIS_UNVERIFIED",
     fillRatio: finiteNumber(run.executionMetrics?.fillRatio)
       ?? (executedQuantity !== null && finiteNumber(run.plan.quantity) > 0
         ? executedQuantity / finiteNumber(run.plan.quantity)
@@ -174,21 +160,21 @@ export function projectExecutionRun(run, signalRecord = null) {
     maePnl,
     mfeR: mfePnl !== null && riskAmount !== null && riskAmount > 0
       ? Math.max(0, mfePnl / riskAmount)
-      : projectedMfeR !== null ? Math.max(0, projectedMfeR) : null,
+      : null,
     maeR: maePnl !== null && riskAmount !== null && riskAmount > 0
       ? Math.abs(maePnl / riskAmount)
-      : projectedMaeR !== null ? Math.abs(projectedMaeR) : null,
-    mfePrice: finiteNumber(run.performance?.mfePrice),
-    maePrice: finiteNumber(run.performance?.maePrice),
-    timeToMfeMs: finiteNumber(run.performance?.timeToMfeMs),
-    timeToMaeMs: finiteNumber(run.performance?.timeToMaeMs),
-    timeToTp1Ms: finiteNumber(run.performance?.timeToTp1Ms),
-    timeToTp2Ms: finiteNumber(run.performance?.timeToTp2Ms),
-    timeToStopMs: finiteNumber(run.performance?.timeToStopMs),
-    mfeBeforeStopR: finiteNumber(run.performance?.mfeBeforeStopR),
-    maeBeforeTp1R: finiteNumber(run.performance?.maeBeforeTp1R),
-    maxFavorableExcursionBeforeExitR: finiteNumber(run.performance?.maxFavorableExcursionBeforeExitR),
-    maxAdverseExcursionBeforeExitR: finiteNumber(run.performance?.maxAdverseExcursionBeforeExitR),
+      : null,
+    mfePrice: excursion.mfePrice,
+    maePrice: excursion.maePrice,
+    timeToMfeMs: sameExcursionBasis ? finiteNumber(run.performance?.timeToMfeMs) : null,
+    timeToMaeMs: sameExcursionBasis ? finiteNumber(run.performance?.timeToMaeMs) : null,
+    timeToTp1Ms: sameExcursionBasis ? finiteNumber(run.performance?.timeToTp1Ms) : null,
+    timeToTp2Ms: sameExcursionBasis ? finiteNumber(run.performance?.timeToTp2Ms) : null,
+    timeToStopMs: sameExcursionBasis ? finiteNumber(run.performance?.timeToStopMs) : null,
+    mfeBeforeStopR: sameExcursionBasis ? finiteNumber(run.performance?.mfeBeforeStopR) : null,
+    maeBeforeTp1R: sameExcursionBasis ? finiteNumber(run.performance?.maeBeforeTp1R) : null,
+    maxFavorableExcursionBeforeExitR: run.status === "CLOSED" ? excursion.mfeR : null,
+    maxAdverseExcursionBeforeExitR: run.status === "CLOSED" ? excursion.maeR : null,
     barsHeld5m: finiteNumber(run.performance?.barsHeld5m),
     minutesHeld: finiteNumber(run.performance?.minutesHeld),
     excursionSamples: finiteNumber(run.performance?.samples),

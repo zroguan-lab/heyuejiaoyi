@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { buildEntryReason } from "../domain/trade-reason.js";
+import { buildDecisionSnapshot, verifyDecisionSnapshot } from "../domain/decision-snapshot.js";
 import {
   V1_EXECUTION_SOURCE,
   V2_4_3_DEMO_PROMOTION_POLICY_VERSION,
@@ -16,6 +17,11 @@ const TERMINAL_EXECUTION_STATUSES = new Set(["CLOSED", "CANCELED", "REJECTED", "
 
 function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function epochIdentity(epoch) {
+  return JSON.stringify([epoch?.id ?? null, epoch?.startedAt ?? null, epoch?.strategySource ?? null,
+    epoch?.strategyVersion ?? null, epoch?.signalModelVersion ?? null]);
 }
 
 export function assessAutomaticExecutionSignal(record, {
@@ -202,6 +208,8 @@ export class StrategyExecutionCoordinator extends EventEmitter {
     if (sameSymbol) {
       return this.recordDecision({ status: "DEFERRED", signalId, trigger, reason: "SYMBOL_ACTIVE", runId: sameSymbol.id, symbol: assessment.symbol });
     }
+    const epochBeforePreparation = typeof this.store.getMetadata === "function"
+      ? (await this.store.getMetadata("active_strategy_performance_epoch"))?.value ?? null : null;
     let prepared;
     try {
       prepared = await this.executor.prepare(signalId, { strategySource: this.strategySource });
@@ -221,20 +229,76 @@ export class StrategyExecutionCoordinator extends EventEmitter {
     if (prepared.reused || !prepared.confirmationCode) {
       return this.recordDecision({ status: "SKIPPED", signalId, trigger, reason: "PLAN_NOT_NEW", runId: prepared.run?.id ?? null });
     }
+    // prepare reads the source again. Snapshot that exact input, not a possibly older coordinator read.
+    // This evidence gate never submits an order when the pre-submit record cannot be persisted.
+    let entrySnapshot, snapshotSource;
+    try {
+      if (!prepared.sourceDecisionRecord?.candidate) throw new Error("ENTRY_SNAPSHOT_SOURCE_CONTEXT_UNAVAILABLE");
+      if (typeof this.store.appendDecisionSnapshot !== "function" || typeof this.store.getDecisionSnapshot !== "function") {
+        throw new Error("ENTRY_SNAPSHOT_STORE_UNAVAILABLE");
+      }
+      const source = structuredClone(prepared.sourceDecisionRecord);
+      snapshotSource = source;
+      const epoch = typeof this.store.getMetadata === "function"
+        ? (await this.store.getMetadata("active_strategy_performance_epoch"))?.value ?? null : null;
+      if (this.strategySource === V2_EXECUTION_SOURCE) {
+        if (!epoch?.id || epoch.startedAt !== this.epochStartedAt || epoch.strategySource !== this.strategySource) {
+          throw new Error("ENTRY_SNAPSHOT_EPOCH_UNCONFIRMED");
+        }
+        if (epochIdentity(epoch) !== epochIdentity(epochBeforePreparation)) throw new Error("ENTRY_SNAPSHOT_EPOCH_CHANGED_DURING_PREPARE");
+        if (epoch.strategyVersion !== source.candidate.strategyVersion
+          || epoch.signalModelVersion !== (source.evaluation ?? source.candidate.shadowV2)?.strategyVersion) {
+          throw new Error("ENTRY_SNAPSHOT_EPOCH_VERSION_MISMATCH");
+        }
+      }
+      entrySnapshot = buildDecisionSnapshot({
+        candidate: source.candidate,
+        evaluation: source.evaluation ?? source.candidate.shadowV2 ?? {},
+        decision: source.decision ?? { selected: source.selected === true, decidedAt: null },
+        scope: "ENTRY_PRE_SUBMIT",
+        runId: prepared.run.id,
+        executionSource: this.strategySource,
+        environment: "BINANCE_DEMO",
+        epoch,
+        executionScore: source.candidate.score,
+        planHash: prepared.run.planHash ?? null,
+        plan: prepared.run.plan ?? null,
+        planCreatedAt: prepared.run.createdAt ?? null,
+        recordedAt: this.now(),
+      });
+      await this.store.appendDecisionSnapshot(entrySnapshot);
+      const persisted = await this.store.getDecisionSnapshot(entrySnapshot.snapshotId);
+      if (!verifyDecisionSnapshot(persisted) || persisted.contentHash !== entrySnapshot.contentHash) {
+        throw new Error("ENTRY_SNAPSHOT_READBACK_MISMATCH");
+      }
+    } catch (error) {
+      const detail = messageOf(error);
+      this.logger.error(`[auto-execution] entry snapshot ${signalId}: ${detail}`);
+      await this.store.appendExecutionAudit(prepared.run.id, "ENTRY_SNAPSHOT_FAILED", {
+        signalId, reason: detail, orderSubmitted: false,
+      }, this.now());
+      return this.recordDecision({ status: "EVIDENCE_BLOCKED", signalId, trigger, runId: prepared.run.id,
+        symbol: prepared.run.symbol, reason: "ENTRY_SNAPSHOT_NOT_PERSISTED", detail });
+    }
     await this.store.appendExecutionAudit(prepared.run.id, "AUTO_EXECUTION_SELECTED", {
       signalId,
       symbol: prepared.run.symbol,
       trigger,
-      strategy: record.candidate.strategy,
-      score: assessment.score,
-      entryReason: assessment.entryReason,
-      strategyVersion: record.candidate.strategyVersion ?? null,
-      experimentTier: record.candidate.experimentTier ?? record.evaluation?.experimentTier ?? null,
-      qualityObservations: record.evaluation?.qualityObservations ?? [],
-      marketEventId: record.candidate.marketEventId ?? null,
-      marketRadar: record.evaluation?.marketRadar ?? record.candidate.marketRadar ?? null,
+      strategy: snapshotSource.candidate.strategy,
+      score: entrySnapshot.scores.executionScore,
+      assessmentScore: assessment.score,
+      entryReason: snapshotSource.candidate.entryReason ?? assessment.entryReason,
+      strategyVersion: snapshotSource.candidate.strategyVersion ?? null,
+      experimentTier: snapshotSource.candidate.experimentTier ?? snapshotSource.evaluation?.experimentTier ?? null,
+      qualityObservations: snapshotSource.evaluation?.qualityObservations ?? [],
+      marketEventId: snapshotSource.candidate.marketEventId ?? null,
+      marketRadar: snapshotSource.evaluation?.marketRadar ?? snapshotSource.candidate.marketRadar ?? null,
       strategySource: this.strategySource,
       demoPromotion: assessment.promotionDecision,
+    }, this.now());
+    await this.store.appendExecutionAudit(prepared.run.id, "ENTRY_DECISION_SNAPSHOT_SAVED", {
+      signalId, snapshotId: entrySnapshot.snapshotId, contentHash: entrySnapshot.contentHash,
+      captureTime: entrySnapshot.times.captureTime, planHash: prepared.run.planHash ?? null,
     }, this.now());
     this.recordDecision({ status: "SUBMITTING", signalId, trigger, runId: prepared.run.id, symbol: prepared.run.symbol });
     const run = await this.executor.execute(prepared.run.id, prepared.confirmationCode);

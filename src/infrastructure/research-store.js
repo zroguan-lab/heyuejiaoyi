@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isExecutionSymbol } from "../execution/execution-symbols.js";
+import { buildDecisionSnapshot, verifyDecisionSnapshot } from "../domain/decision-snapshot.js";
 import {
   V1_EXECUTION_SOURCE,
   V2_EXECUTION_SOURCE,
@@ -108,6 +109,25 @@ export class ResearchStore {
         FOREIGN KEY(signal_id) REFERENCES signals(id)
       );
       CREATE INDEX IF NOT EXISTS shadow_signals_status_idx ON shadow_signals(status, updated_at DESC);
+      CREATE TABLE IF NOT EXISTS decision_snapshots (
+        snapshot_id TEXT PRIMARY KEY,
+        scope TEXT NOT NULL CHECK(scope IN ('SHADOW_DECISION', 'ENTRY_PRE_SUBMIT')),
+        signal_id TEXT NOT NULL,
+        run_id TEXT,
+        captured_at INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS decision_snapshots_scope_time_idx ON decision_snapshots(scope, captured_at, snapshot_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS decision_snapshots_one_entry_per_run_idx
+      ON decision_snapshots(run_id) WHERE scope = 'ENTRY_PRE_SUBMIT';
+      CREATE TRIGGER IF NOT EXISTS decision_snapshots_no_update
+      BEFORE UPDATE ON decision_snapshots BEGIN SELECT RAISE(ABORT, 'decision snapshots are immutable'); END;
+      CREATE TRIGGER IF NOT EXISTS decision_snapshots_no_delete
+      BEFORE DELETE ON decision_snapshots BEGIN SELECT RAISE(ABORT, 'decision snapshots are immutable'); END;
+      CREATE TRIGGER IF NOT EXISTS decision_snapshots_no_replace
+      BEFORE INSERT ON decision_snapshots WHEN EXISTS(SELECT 1 FROM decision_snapshots WHERE snapshot_id=NEW.snapshot_id)
+      BEGIN SELECT RAISE(ABORT, 'decision snapshot id already exists'); END;
     `);
     const manualColumns = new Set(this.db.prepare("PRAGMA table_info(manual_trades)").all().map((column) => column.name));
     if (!manualColumns.has("status")) this.db.exec("ALTER TABLE manual_trades ADD COLUMN status TEXT NOT NULL DEFAULT 'OPEN'");
@@ -239,13 +259,14 @@ export class ResearchStore {
     return null;
   }
 
-  async saveShadowDecision(candidate, { selected = false, rejectionReason = null, trade = null, counterfactual = false } = {}) {
+  async saveShadowDecision(candidate, { selected = false, rejectionReason = null, trade = null, counterfactual = false, decidedAt = Date.now() } = {}) {
     this.ensureReady();
     const evaluation = candidate?.shadowV2;
     if (!candidate?.id || evaluation?.mode !== "SHADOW_ONLY" || evaluation?.orderSubmissionAllowed !== false) {
       throw new TypeError("V2 影子记录必须明确禁止订单提交");
     }
     const status = trade?.status ?? (selected ? "ENTRY_PENDING" : "REJECTED");
+    // Capture is this persistence attempt, never a supplied historical decision timestamp.
     const now = Date.now();
     const payload = {
       candidate,
@@ -255,11 +276,19 @@ export class ResearchStore {
         rejectionReason,
         counterfactual: Boolean(counterfactual),
         experimentTier: evaluation.experimentTier ?? null,
-        decidedAt: now,
+        decidedAt,
       },
       trade,
     };
-    this.db.prepare(`
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const epochRow = this.db.prepare("SELECT value FROM metadata WHERE key = 'active_strategy_performance_epoch'").get();
+      const snapshot = buildDecisionSnapshot({
+        candidate, evaluation, decision: payload.decision, scope: "SHADOW_DECISION", recordedAt: now,
+        epoch: epochRow ? JSON.parse(epochRow.value) : null,
+      });
+      this.insertDecisionSnapshot(snapshot);
+      this.db.prepare(`
       INSERT INTO shadow_signals(signal_id, strategy_version, status, selected, created_at, updated_at, payload)
       VALUES(?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(signal_id) DO UPDATE SET
@@ -267,8 +296,76 @@ export class ResearchStore {
         selected = excluded.selected,
         updated_at = excluded.updated_at,
         payload = excluded.payload
-    `).run(candidate.id, evaluation.strategyVersion, status, selected ? 1 : 0, candidate.triggerTime, now, JSON.stringify(payload));
+      `).run(candidate.id, evaluation.strategyVersion, status, selected ? 1 : 0, candidate.triggerTime, now, JSON.stringify(payload));
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
     return payload;
+  }
+
+  // Synchronous internal operation: callers can include this insert in their own transaction.
+  insertDecisionSnapshot(snapshot) {
+    this.ensureReady();
+    if (!verifyDecisionSnapshot(snapshot)) throw new TypeError("决策快照schema/hash校验失败");
+    const previous = this.db.prepare("SELECT content_hash, payload FROM decision_snapshots WHERE snapshot_id = ?").get(snapshot.snapshotId);
+    if (previous) {
+      const stored = JSON.parse(previous.payload);
+      if (!verifyDecisionSnapshot(stored) || stored.contentHash !== previous.content_hash || stored.contentHash !== snapshot.contentHash) {
+        throw new Error("决策快照ID冲突或内容损坏，禁止覆盖");
+      }
+      return stored;
+    }
+    this.db.prepare(`INSERT INTO decision_snapshots(snapshot_id, scope, signal_id, run_id, captured_at, content_hash, payload)
+      VALUES(?, ?, ?, ?, ?, ?, ?)`).run(snapshot.snapshotId, snapshot.scope, snapshot.signalId,
+      snapshot.runId, snapshot.times.captureTime, snapshot.contentHash, JSON.stringify(snapshot));
+    return snapshot;
+  }
+
+  async appendDecisionSnapshot(snapshot) {
+    this.ensureReady();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const saved = this.insertDecisionSnapshot(snapshot);
+      this.db.exec("COMMIT");
+      return saved;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  async getDecisionSnapshot(snapshotId) {
+    this.ensureReady();
+    const row = this.db.prepare("SELECT content_hash, payload FROM decision_snapshots WHERE snapshot_id = ?").get(snapshotId);
+    if (!row) return null;
+    const snapshot = JSON.parse(row.payload);
+    if (!verifyDecisionSnapshot(snapshot) || snapshot.contentHash !== row.content_hash) throw new Error("决策快照完整性校验失败");
+    return snapshot;
+  }
+
+  async listDecisionSnapshots({ scope = null, since = null, until = null, limit = 1000 } = {}) {
+    this.ensureReady();
+    const clauses = [], values = [];
+    if (scope !== null) { clauses.push("scope = ?"); values.push(scope); }
+    if (since !== null) {
+      if (!Number.isFinite(since)) throw new TypeError("快照since无效");
+      clauses.push("captured_at >= ?"); values.push(since);
+    }
+    if (until !== null) {
+      if (!Number.isFinite(until)) throw new TypeError("快照until无效");
+      clauses.push("captured_at <= ?"); values.push(until);
+    }
+    values.push(Math.min(Math.max(Math.trunc(Number(limit)) || 1000, 1), 10000));
+    return this.db.prepare(`SELECT snapshot_id FROM decision_snapshots${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""}
+      ORDER BY captured_at, snapshot_id LIMIT ?`).all(...values).map((row) => {
+      // Read and validate synchronously so no mutable input can race an awaited callback.
+      const stored = this.db.prepare("SELECT content_hash, payload FROM decision_snapshots WHERE snapshot_id = ?").get(row.snapshot_id);
+      const snapshot = JSON.parse(stored.payload);
+      if (!verifyDecisionSnapshot(snapshot) || stored.content_hash !== snapshot.contentHash) throw new Error("决策快照完整性校验失败");
+      return snapshot;
+    });
   }
 
   async saveShadowTrade(trade) {

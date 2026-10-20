@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { executionFillFacts, executionExcursionFacts, ownedExitFills, observeOwnedExitFills } from "./execution-fill-facts.js";
 import { EventEmitter } from "node:events";
 import { BinanceApiError, TestnetWriteDisabledError } from "./binance-testnet-trading.js";
 import { buildCanaryRun, buildOperatorCanaryRun, verifyConfirmation } from "./canary-plan.js";
@@ -49,6 +50,9 @@ const BREAK_EVEN_RETRY_BASE_MS = 30_000;
 const BREAK_EVEN_RETRY_MAX_MS = 5 * 60_000;
 const SUBMISSION_UNKNOWN_TIMEOUT_MS = 2 * 60_000;
 const EXIT_SETTLEMENT_GRACE_MS = 30_000;
+const TP_REPLACEMENT_LIMIT = 3;
+const TP_RETRY_BASE_MS = 30_000;
+const TP_FAILED_STATUSES = new Set(["REJECTED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"]);
 const UNDERSIZED_FILL_EXCEPTION = "ENTRY_FILL_BELOW_MINIMUM";
 const UNPROTECTED_POSITION_EXCEPTION = "UNPROTECTED_POSITION_AUTO_CLOSE";
 const UNSUPPORTED_LEVERAGE_EXCEPTION = "UNSUPPORTED_LEVERAGE";
@@ -116,14 +120,12 @@ function updateExecutionMetrics(run, minimumFillRatio) {
   const plannedQuantity = positiveNumber(run.plan?.quantity);
   const filledQuantity = positiveNumber(run.entryOrder?.executedQuantity);
   if (plannedQuantity === null || filledQuantity === null) return null;
-  const entryPrice = positiveNumber(run.entryOrder?.averagePrice, run.entryOrder?.price, run.plan?.prices?.entry);
-  const stopLoss = positiveNumber(run.plan?.prices?.stopLoss);
+  const facts = executionFillFacts(run);
+  const entryPrice = facts.entryPrice;
   const leverage = positiveNumber(run.plan?.leverage);
   const fillRatio = filledQuantity / plannedQuantity;
   const actualNotional = entryPrice === null ? null : entryPrice * filledQuantity;
-  const actualRiskAmount = entryPrice === null || stopLoss === null
-    ? null
-    : Math.abs(entryPrice - stopLoss) * filledQuantity;
+  const actualRiskAmount = facts.riskAmount;
   const plannedEntryPrice = positiveNumber(run.plan?.prices?.entry);
   const submittedLimitPrice = positiveNumber(run.entryExecution?.submittedLimitPrice, run.entryOrder?.price);
   const directionSign = run.plan?.direction === "SHORT" ? -1 : 1;
@@ -140,6 +142,9 @@ function updateExecutionMetrics(run, minimumFillRatio) {
     actualNotional,
     actualMarginEstimate: actualNotional !== null && leverage !== null ? actualNotional / leverage : null,
     actualRiskAmount,
+    entryFactStatus: facts.status,
+    entryFactSource: facts.source,
+    entryFactReason: facts.reason,
     plannedEntryPrice,
     submittedLimitPrice,
     slippageBps,
@@ -167,29 +172,30 @@ function entryTime(run) {
 }
 
 function ensureRunExcursion(run) {
-  const entryPrice = positiveNumber(run.entryOrder?.averagePrice, run.entryOrder?.price, run.plan?.prices?.entry);
+  const facts = executionFillFacts(run);
+  const entryPrice = facts.entryPrice;
   const stopLoss = Number(run.plan?.prices?.stopLoss);
   const openedAt = entryTime(run);
-  if (![entryPrice, stopLoss, openedAt].every(Number.isFinite) || entryPrice <= 0 || stopLoss <= 0) return null;
-  if (run.performance?.modelVersion === "TRADE_EXCURSION_R1") return run.performance;
+  if (![entryPrice, stopLoss, openedAt].every(Number.isFinite) || entryPrice <= 0 || stopLoss <= 0 || !(facts.riskAmount > 0)) return null;
+  if (run.performance?.factBasis === "ACTUAL_ENTRY_V1" && run.performance.entryPrice === entryPrice) return run.performance;
   const legacy = run.performance ?? {};
   const state = createTradeExcursionState({ direction: run.plan.direction, entryPrice, stopLoss, openedAt });
-  const legacyMfeR = Math.max(0, Number(legacy.mfeR) || 0);
-  const legacyMaeR = Math.abs(Number(legacy.maeR) || 0);
-  state.mfeR = legacyMfeR;
-  state.maeR = legacyMaeR;
-  state.mfePrice = run.plan.direction === "LONG"
-    ? entryPrice + legacyMfeR * state.initialRiskPrice
-    : entryPrice - legacyMfeR * state.initialRiskPrice;
-  state.maePrice = run.plan.direction === "LONG"
-    ? entryPrice - legacyMaeR * state.initialRiskPrice
-    : entryPrice + legacyMaeR * state.initialRiskPrice;
+  const recovered = executionExcursionFacts(run, facts);
+  if (recovered.mfeR !== null) {
+    Object.assign(state, { mfeR: recovered.mfeR, maeR: recovered.maeR,
+      mfePrice: recovered.mfePrice, maePrice: recovered.maePrice,
+      lastObservedAt: Math.max(openedAt, Number(legacy.lastObservedAt) || openedAt) });
+  }
   run.performance = {
-    ...legacy,
     ...state,
-    samples: Number(legacy.samples ?? 0),
-    mfePnl: Number(legacy.mfePnl ?? 0),
-    maePnl: Number(legacy.maePnl ?? 0),
+    factBasis: "ACTUAL_ENTRY_V1",
+    observationSource: "MARK_PRICE_POLL_AND_EXIT_FILLS",
+    observationCoverage: "POLL_SAMPLED_PARTIAL",
+    samples: recovered.mfeR !== null ? Number(legacy.samples) : 0,
+    observedPriceLow: recovered.mfeR !== null ? legacy.observedPriceLow : null,
+    observedPriceHigh: recovered.mfeR !== null ? legacy.observedPriceHigh : null,
+    mfePnl: recovered.mfePnl,
+    maePnl: recovered.maePnl,
   };
   return run.performance;
 }
@@ -199,14 +205,16 @@ function updateExcursions(run, position, observedAt) {
   const performance = ensureRunExcursion(run);
   if (!performance || !Number.isFinite(markPrice) || markPrice <= 0) return;
   const updated = observeTradeExcursion(performance, { low: markPrice, high: markPrice, observedAt });
-  const entryPrice = positiveNumber(run.entryOrder?.averagePrice, run.entryOrder?.price, run.plan?.prices?.entry);
-  const quantity = Number(run.entryOrder?.executedQuantity ?? run.plan?.quantity);
-  const riskAmount = Number(run.executionMetrics?.actualRiskAmount ?? run.plan?.riskAmountEstimate);
+  updated.observedPriceLow = Math.min(positiveNumber(performance.observedPriceLow) ?? markPrice, markPrice);
+  updated.observedPriceHigh = Math.max(positiveNumber(performance.observedPriceHigh) ?? markPrice, markPrice);
+  const facts = executionFillFacts(run);
+  const entryPrice = facts.entryPrice;
+  const quantity = facts.quantity;
+  const riskAmount = facts.riskAmount;
   if (![entryPrice, quantity].every(Number.isFinite) || entryPrice <= 0 || quantity <= 0) return;
   const directionSign = run.plan.direction === "LONG" ? 1 : -1;
-  const excursionPnl = directionSign * (markPrice - entryPrice) * quantity;
-  updated.mfePnl = Math.max(Number(performance.mfePnl ?? 0), excursionPnl);
-  updated.maePnl = Math.min(Number(performance.maePnl ?? 0), excursionPnl);
+  updated.mfePnl = Math.max(0, directionSign * (updated.mfePrice - entryPrice) * quantity);
+  updated.maePnl = Math.min(0, directionSign * (updated.maePrice - entryPrice) * quantity);
   if (Number.isFinite(riskAmount) && riskAmount > 0) {
     updated.mfeR = updated.mfePnl / riskAmount;
     updated.maeR = Math.abs(updated.maePnl / riskAmount);
@@ -220,6 +228,9 @@ function markRunMilestone(run, type, at, price = null) {
   if (!performance) return;
   if (Number.isFinite(Number(price)) && Number(price) > 0) {
     performance = observeTradeExcursion(performance, { low: Number(price), high: Number(price), observedAt: Math.max(Number(at), performance.lastObservedAt) });
+    performance.samples = Number(performance.samples ?? 0) + 1;
+    performance.observedPriceLow = Math.min(positiveNumber(performance.observedPriceLow) ?? Number(price), Number(price));
+    performance.observedPriceHigh = Math.max(positiveNumber(performance.observedPriceHigh) ?? Number(price), Number(price));
   }
   run.performance = markTradeExcursionMilestone(performance, type, Math.max(Number(at), performance.openedAt));
 }
@@ -233,35 +244,29 @@ function matchingTradeTime(result, order) {
   return times.length ? Math.min(...times) : Number(order?.updateTime) || null;
 }
 
-function matchingTradePrice(result, order, fallback) {
-  const ids = new Set([order?.actualOrderId, order?.orderId].filter(Boolean).map(String));
-  const match = (result?.trades ?? []).find((trade) => ids.has(String(trade.orderId)) && Number(trade.price) > 0);
-  return Number(match?.price) || Number(fallback) || null;
-}
-
-function finalizeRunExcursions(run, result, observedAt) {
+function finalizeRunExcursions(target, result, observedAt) {
+  const run = { ...target, result };
+  const facts = executionFillFacts(run);
+  target.executionMetrics = { ...target.executionMetrics, entryPrice: facts.entryPrice,
+    actualRiskAmount: facts.riskAmount, actualNotional: facts.notional,
+    actualMarginEstimate: facts.notional !== null && positiveNumber(run.plan?.leverage) !== null ? facts.notional / Number(run.plan.leverage) : null,
+    entryFactStatus: facts.status, entryFactSource: facts.source, entryFactReason: facts.reason };
   let performance = ensureRunExcursion(run);
   if (!performance) return;
-  const tp1At = matchingTradeTime(result, run.protection?.takeProfit1);
+  const exits = ownedExitFills(run, result).filter(t => Number.isFinite(Number(t.time)) && t.time !== null && t.time !== undefined);
+  performance = observeOwnedExitFills(performance, run, result);
+  const tp1Ids = new Set([run.protection?.takeProfit1?.actualOrderId, run.protection?.takeProfit1?.orderId].filter(Boolean).map(String));
+  const tp1At = exits.find(t => tp1Ids.has(String(t.orderId)))?.time ?? null;
   if (tp1At !== null && performance.timeToTp1Ms === null) {
-    markRunMilestone(run, "TP1", tp1At, matchingTradePrice(result, run.protection?.takeProfit1, run.plan.prices.takeProfit1));
-    performance = run.performance;
+    const includesLaterSamples = performance.lastObservedAt > Number(tp1At);
+    performance = markTradeExcursionMilestone(performance, "TP1", Math.max(Number(tp1At), performance.openedAt));
+    if (includesLaterSamples) performance.maeBeforeTp1R = null;
   }
   const role = result?.exitRole;
   const roleOrder = role === "operatorClose" ? run.operatorCloseOrder : run.protection?.[role];
-  const exitAt = matchingTradeTime(result, roleOrder) ?? Number(observedAt);
-  const fallbackPrice = role === "takeProfit2" ? run.plan.prices.takeProfit2
-    : role === "takeProfit1" ? run.plan.prices.takeProfit1
-      : role === "breakEvenStop" ? run.plan.prices.entry
-        : role === "stop" ? run.plan.prices.stopLoss : null;
-  const exitPrice = matchingTradePrice(result, roleOrder, fallbackPrice);
-  if (Number.isFinite(exitPrice) && exitPrice > 0) {
-    performance = observeTradeExcursion(performance, {
-      low: exitPrice,
-      high: exitPrice,
-      observedAt: Math.max(exitAt, performance.lastObservedAt),
-    });
-  }
+  const roleIds = new Set([roleOrder?.actualOrderId, roleOrder?.orderId].filter(Boolean).map(String));
+  const roleTimes = exits.filter(t => roleIds.has(String(t.orderId))).map(t => Number(t.time));
+  const exitAt = roleTimes.length ? Math.max(...roleTimes) : matchingTradeTime(result, roleOrder) ?? Number(observedAt);
   if (role === "takeProfit2" && performance.timeToTp2Ms === null) {
     performance = markTradeExcursionMilestone(performance, "TP2", Math.max(exitAt, performance.openedAt));
   }
@@ -273,6 +278,10 @@ function finalizeRunExcursions(run, result, observedAt) {
     closedAt: Math.max(exitAt, performance.openedAt),
     exitReason: role === "breakEvenStop" ? "BREAKEVEN_AFTER_TP1" : role === "stop" ? "STOP_LOSS" : role,
   });
+  const excursion = executionExcursionFacts(run, facts);
+  run.performance.mfePnl = excursion.mfePnl;
+  run.performance.maePnl = excursion.maePnl;
+  target.performance = run.performance;
 }
 
 export class TestnetCanaryExecutor extends EventEmitter {
@@ -408,9 +417,9 @@ export class TestnetCanaryExecutor extends EventEmitter {
         await this.reconcile(activeRun.id);
       }
     }
-    const signalRecord = typeof this.store.getExecutionSignal === "function"
+    const signalRecord = structuredClone(typeof this.store.getExecutionSignal === "function"
       ? await this.store.getExecutionSignal(signalId, resolvedStrategySource)
-      : await this.store.getSignal(signalId);
+      : await this.store.getSignal(signalId));
     const symbol = this.assertAllowedSymbol(signalRecord?.candidate?.symbol);
     const activeRuns = await this.store.listActiveExecutionRuns();
     const [accountState, symbolInfo, leverageBrackets] = await Promise.all([
@@ -446,7 +455,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
       strategySource: resolvedStrategySource,
     }, this.now());
     this.emit("execution", structuredClone(prepared.run));
-    return { ...prepared, reused: false };
+    return { ...prepared, reused: false, sourceDecisionRecord: structuredClone(signalRecord) };
   }
 
   async prepareOperatorCanary(direction = "LONG") {
@@ -993,14 +1002,94 @@ export class TestnetCanaryExecutor extends EventEmitter {
       }
     }
     if (!isActiveAlgo(order)) throw new Error(`${key} 条件单不是活动状态: ${order?.status ?? "UNKNOWN"}`);
+    const changed = run.protection[key]?.algoId !== order.algoId || run.protection[key]?.status !== order.status;
     run.protection[key] = order;
-    await this.persist(run, "PROTECTION_ORDER_CONFIRMED", {
+    if (changed) await this.persist(run, "PROTECTION_ORDER_CONFIRMED", {
       role: key,
       clientAlgoId,
       algoId: order.algoId,
       status: order.status,
     });
     return order;
+  }
+
+  takeProfitRecovery(run, key) {
+    run.protection.tpRecovery ??= {};
+    return run.protection.tpRecovery[key] ??= {
+      currentClientId: run.plan.clientIds[key], ids: [run.plan.clientIds[key]], replacements: 0,
+      attempted: Boolean(run.protection[key]) || (run.status === "PROTECTION_INCOMPLETE" && run.protection.phase === "INITIAL"),
+      pending: false, nextAt: 0,
+    };
+  }
+
+  async deferTakeProfit(run, key, state, reason) {
+    // One audit per changed failure or retry window, not per reconciliation poll.
+    if (state.reason !== reason || this.now() >= Number(state.nextAt ?? 0)) {
+      state.reason = reason;
+      state.nextAt = this.now() + Math.min(300_000, TP_RETRY_BASE_MS * (2 ** state.replacements));
+      await this.persist(run, "TP_RECOVERY_DEFERRED", { role: key, clientAlgoId: state.currentClientId,
+        reason, replacements: state.replacements, nextAt: state.nextAt });
+    }
+    return false;
+  }
+
+  async ensureTakeProfit(run, key, place) {
+    const state = this.takeProfitRecovery(run, key);
+    if (Number(run.protection[key]?.actualQuantity) > 0) return true;
+    let order;
+    try { order = await this.client.queryAlgoOrder(state.currentClientId); }
+    catch { return await this.deferTakeProfit(run, key, state, "QUERY_UNKNOWN"); }
+    order ??= state.terminalOrder ?? null;
+    if (order) {
+      order = { ...order, clientAlgoId: order.clientAlgoId ?? state.currentClientId };
+      run.protection[key] = order;
+      if (Number(order.actualQuantity) > 0) return true; // Includes partial/terminal fills; never replenish.
+      if (order.status === "FINISHED" || order.actualOrderId) {
+        return await this.deferTakeProfit(run, key, state, "FINISHED_OR_CHILD_FILL_UNRESOLVED");
+      }
+      if (isActiveAlgo(order)) { state.reason = null; return true; }
+      if (!TP_FAILED_STATUSES.has(order.status)) return await this.deferTakeProfit(run, key, state, "ORDER_STATE_UNKNOWN");
+      if (order.status !== "REJECTED" && (order.actualQuantity === null || order.actualQuantity === undefined)) {
+        return await this.deferTakeProfit(run, key, state, "TERMINAL_FILL_QUANTITY_UNKNOWN");
+      }
+      if (state.terminalId !== state.currentClientId) {
+        state.terminalId = state.currentClientId;
+        return await this.deferTakeProfit(run, key, state, "TERMINAL_" + order.status);
+      }
+      if (this.now() < Number(state.nextAt)) return false;
+      if (state.replacements >= TP_REPLACEMENT_LIMIT) return await this.deferTakeProfit(run, key, state, "RETRY_LIMIT_REACHED");
+      run.protection[`tpHistory_${key}_${state.replacements}`] = { ...order, recoveryRole: key };
+      state.replacements += 1;
+      state.currentClientId = `${run.plan.clientIds[key].slice(0, 32)}-r${state.replacements}`;
+      state.ids.push(state.currentClientId);
+      state.attempted = false;
+      state.pending = false;
+      delete state.terminalOrder;
+    } else if (state.attempted || state.pending) {
+      return await this.deferTakeProfit(run, key, state, "SUBMISSION_UNKNOWN_QUERY_ONLY");
+    } else if (this.now() < Number(state.nextAt)) return false;
+    state.attempted = true;
+    state.pending = true;
+    await this.persist(run, "PROTECTION_ORDER_INTENT_PERSISTED", { role: key, clientAlgoId: state.currentClientId,
+      replacements: state.replacements, reason: orderReason(run, key) });
+    try {
+      order = await place(state.currentClientId);
+    } catch (error) {
+      try { order = await this.client.queryAlgoOrder(state.currentClientId); } catch { order = null; }
+      if (!order && error instanceof BinanceApiError && error.apiCode === -2021) {
+        order = { status: "REJECTED", clientAlgoId: state.currentClientId, actualQuantity: 0 };
+        state.terminalOrder = order;
+      }
+      if (!order) return await this.deferTakeProfit(run, key, state, "SUBMISSION_UNKNOWN_QUERY_ONLY");
+    }
+    if (!order) return await this.deferTakeProfit(run, key, state, "SUBMISSION_UNKNOWN_QUERY_ONLY");
+    state.pending = false;
+    run.protection[key] = { ...order, clientAlgoId: order.clientAlgoId ?? state.currentClientId };
+    await this.persist(run, isActiveAlgo(order) ? "PROTECTION_ORDER_CONFIRMED" : "TP_RECOVERY_RESPONSE", {
+      role: key, clientAlgoId: state.currentClientId, algoId: order.algoId, status: order.status });
+    if (isActiveAlgo(order) || Number(order.actualQuantity) > 0) { state.reason = null; return true; }
+    state.terminalId = state.currentClientId;
+    return await this.deferTakeProfit(run, key, state, "TERMINAL_" + order.status);
   }
 
   async ensureProtection(run, filledQuantity) {
@@ -1029,32 +1118,38 @@ export class TestnetCanaryExecutor extends EventEmitter {
       });
       return await this.emergencyCloseUnprotectedRun(run, "STOP_PROTECTION_FAILED");
     }
-    try {
-      await this.ensureAlgo(run, "takeProfit2", (clientAlgoId) => this.client.placeTakeProfitClose({
+    const failures = [];
+    for (const key of split.mode === "TWO_TARGETS" ? ["takeProfit2", "takeProfit1"] : ["takeProfit2"]) {
+      const closing = run.protection.takeProfit2;
+      if (key === "takeProfit1" && (Number(closing?.actualQuantity) >= Number(filledQuantity)
+        || closing?.status === "FINISHED")) {
+        // A stale position snapshot must not create another TP while a full
+        // close is settling; FINISHED without quantity is also not proof to resubmit.
+        failures.push(key);
+        const state = this.takeProfitRecovery(run, key);
+        await this.deferTakeProfit(run, key, state, "CLOSING_TP_SETTLEMENT_PENDING");
+        continue;
+      }
+      const satisfied = await this.ensureTakeProfit(run, key, (clientAlgoId) => this.client.placeTakeProfitClose({
         symbol: run.symbol,
         side: run.plan.exitSide,
-        triggerPrice: run.plan.prices.takeProfit2,
+        triggerPrice: run.plan.prices[key],
         clientAlgoId,
+        quantity: key === "takeProfit1" ? formatToStep(split.takeProfit1Quantity, run.plan.rules.stepSize) : null,
       }));
-      if (split.mode === "TWO_TARGETS") {
-        const quantity = formatToStep(split.takeProfit1Quantity, run.plan.rules.stepSize);
-        await this.ensureAlgo(run, "takeProfit1", (clientAlgoId) => this.client.placeTakeProfitClose({
-          symbol: run.symbol,
-          side: run.plan.exitSide,
-          triggerPrice: run.plan.prices.takeProfit1,
-          clientAlgoId,
-          quantity,
-        }));
-      }
+      if (!satisfied) failures.push(key);
+    }
+    if (!failures.length) {
       run.status = "OPEN_PROTECTED";
       run.protection.phase = "INITIAL_COMPLETE";
       run.error = null;
       await this.persist(run, "POSITION_PROTECTED", { mode: split.mode, filledQuantity });
       return run;
-    } catch (error) {
+    } else {
       run.status = "PROTECTION_INCOMPLETE";
-      run.error = errorMessage(error);
-      await this.persist(run, "TAKE_PROFIT_PROTECTION_INCOMPLETE", { message: run.error });
+      const previousError = run.error;
+      run.error = failures.map(key => `${key}: ${run.protection.tpRecovery[key].reason}`).join("; ");
+      if (previousError !== run.error) await this.persist(run, "TAKE_PROFIT_PROTECTION_INCOMPLETE", { message: run.error });
       return run;
     }
   }
@@ -1096,11 +1191,34 @@ export class TestnetCanaryExecutor extends EventEmitter {
       if (key === "takeProfit1" && run.protection.mode === "SINGLE_TARGET") return [key, null];
       if (key === "breakEvenStop" && !run.protection.breakEvenStop
         && !["BREAKEVEN_PENDING", "BREAKEVEN_ACTIVE"].includes(run.protection.phase)) return [key, null];
-      const clientAlgoId = run.plan.clientIds[key];
+      const recovery = run.protection.tpRecovery?.[key];
+      const clientAlgoId = recovery?.currentClientId ?? run.plan.clientIds[key];
       if (!clientAlgoId) return [key, null];
+      if (recovery) {
+        let current = null;
+        let filled = null;
+        for (const [index, id] of recovery.ids.entries()) {
+          let order;
+          try { order = activeByClientId.get(String(id)) ?? await this.client.queryAlgoOrder(id); }
+          catch { continue; } // Per-leg UNKNOWN is handled without suppressing its sibling.
+          if (!order) continue;
+          const known = { ...order, clientAlgoId: order.clientAlgoId ?? id };
+          if (id === clientAlgoId) current = known;
+          else run.protection[`tpHistory_${key}_${index}`] = { ...known, recoveryRole: key };
+          if (Number(known.actualQuantity) > 0 || known.status === "FINISHED") filled = known;
+        }
+        return [key, filled ?? current];
+      }
       const active = activeByClientId.get(String(clientAlgoId));
       if (active) return [key, active];
-      return [key, await this.client.queryAlgoOrder(clientAlgoId)];
+      try { return [key, await this.client.queryAlgoOrder(clientAlgoId)]; }
+      catch (error) {
+        if (!["takeProfit1", "takeProfit2"].includes(key)) throw error;
+        const state = this.takeProfitRecovery(run, key);
+        state.attempted = true;
+        state.pending = true;
+        return [key, null];
+      }
     }));
     return Object.fromEntries(entries);
   }
@@ -1204,6 +1322,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
       run.plan?.clientIds?.breakEvenStop,
       run.plan?.clientIds?.takeProfit1,
       run.plan?.clientIds?.takeProfit2,
+      ...Object.values(run.protection.tpRecovery ?? {}).flatMap(state => state.ids ?? []),
     ].filter(Boolean).map(String));
     return {
       positions: (account.positions ?? []).filter((position) => position.symbol === run.symbol),
@@ -1226,7 +1345,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
     run.protection = { ...run.protection, ...protection };
     const position = account.positions.find((item) => item.symbol === symbol);
     if (!position) {
-      for (const [role, order] of Object.entries(protection)) await this.cancelAlgoIfActive(run, role, order);
+      for (const [role, order] of Object.entries(run.protection)) await this.cancelAlgoIfActive(run, role, order);
       const finalAccount = await this.client.fetchAccountState(symbol);
       run.exchange = finalAccount;
       const residuals = this.runResiduals(finalAccount, run);
@@ -1295,7 +1414,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
     const tp1Filled = Number(tp1?.actualQuantity ?? 0) > 0;
     if (tp1Filled && run.performance?.timeToTp1Ms === null) {
       const tp1At = Number(tp1?.updateTime) || this.now();
-      markRunMilestone(run, "TP1", tp1At, run.plan.prices.takeProfit1);
+      markRunMilestone(run, "TP1", tp1At);
     }
     const activeStopBeforeRecovery = isActiveAlgo(protection.breakEvenStop) || isActiveAlgo(protection.stop);
     if (run.status === "ERROR_UNPROTECTED") {
@@ -1314,8 +1433,14 @@ export class TestnetCanaryExecutor extends EventEmitter {
       run.error = null;
       await this.persist(run, "ACTIVE_STOP_RECOVERED", { status: run.status });
     }
-    if (["PROTECTION_PENDING", "PROTECTION_INCOMPLETE"].includes(run.status)
-      && run.protection.phase !== "BREAKEVEN_PENDING" && !tp1Filled) {
+    const initialTPFailed = run.status === "OPEN_PROTECTED" && activeStopBeforeRecovery
+      && !["BREAKEVEN_PENDING", "BREAKEVEN_ACTIVE"].includes(run.protection.phase)
+      && (run.protection.mode === "SINGLE_TARGET" ? ["takeProfit2"] : ["takeProfit2", "takeProfit1"])
+        .some(key => TP_FAILED_STATUSES.has(protection[key]?.status)
+          && !(Number(protection[key]?.actualQuantity) > 0) && !protection[key]?.actualOrderId);
+    if ((["PROTECTION_PENDING", "PROTECTION_INCOMPLETE"].includes(run.status) || initialTPFailed)
+      && run.protection.phase !== "BREAKEVEN_PENDING" && !tp1Filled
+      && !fullyFilledClosingProtection(protection, position)) {
       return await this.ensureProtection(run, Math.abs(Number(position.quantity)));
     }
 
@@ -1372,6 +1497,16 @@ export class TestnetCanaryExecutor extends EventEmitter {
       }
     }
 
+    // TP1 completion must not suppress recovery of the independent remaining TP2.
+    // Never rebuild TP1, alter BE, or submit a TP when a closing fill is settling.
+    let tp2RecoveryIncomplete = false;
+    if (tp1Filled && isActiveAlgo(protection.breakEvenStop)
+      && !isActiveAlgo(protection.takeProfit2) && !fullyFilledClosingProtection(protection, position)) {
+      tp2RecoveryIncomplete = !(await this.ensureTakeProfit(run, "takeProfit2", clientAlgoId => this.client.placeTakeProfitClose({
+        symbol, side: run.plan.exitSide, triggerPrice: run.plan.prices.takeProfit2, clientAlgoId,
+      })));
+    }
+
     const activeStop = isActiveAlgo(protection.breakEvenStop) || isActiveAlgo(protection.stop);
     if (activeStop && run.protection.exitSettlement) delete run.protection.exitSettlement;
     if (!activeStop) {
@@ -1411,8 +1546,8 @@ export class TestnetCanaryExecutor extends EventEmitter {
       });
       return await this.emergencyCloseUnprotectedRun(run, "ACTIVE_STOP_MISSING");
     }
-    run.status = tp1Filled ? "TP1_FILLED" : "OPEN_PROTECTED";
-    run.error = null;
+    run.status = tp2RecoveryIncomplete ? "PROTECTION_INCOMPLETE" : tp1Filled ? "TP1_FILLED" : "OPEN_PROTECTED";
+    run.error = tp2RecoveryIncomplete ? `takeProfit2: ${run.protection.tpRecovery.takeProfit2.reason}` : null;
     return await this.persist(run, "POSITION_RECONCILED", { quantity: position.quantity, status: run.status });
   }
 

@@ -1,0 +1,87 @@
+{
+  "checkedAtUtc": "2026-10-16 10:03:49 UTC",
+  "all8ProjectTitleIdle": true,
+  "all8InitializationCompleted": true,
+  "threads": [
+    {
+      "roleId": "quant-researcher",
+      "title": "量化策略研究员",
+      "threadId": "01a14425-85e4-7490-a627-3fdf759398be",
+      "projectId": "faa2176b-cfaa-4e05-ba6f-d0a4ebdf3ca1",
+      "status": "idle",
+      "turnId": "01a14425-8b48-7120-8570-11180c275757",
+      "completedAt": 1792144809,
+      "initializationReply": "初始化完成，待总控派单。 已完整读取根 AGENTS.md、团队章程、协作流程、能力清单、策略事实源，以及岗位 quant-researcher.md 和技能 quant-research/SKILL.md。 职责：研究市场机制、来源因子、入场出场假设，交付可证伪假设、反证条件与最小实验。 三条核心边界： 本轮仅只读初始化；不写文件、数据库、策略或配置，不操作服务及交易，不读取凭据或封存样本。 遵守诚实与第一性原理；分别标注事实、推断、假设、未知，结论附来源、时间及版本，不把评分或样本门槛当作盈利证明。 仅按总控明确范围接单；不创建子 Agent、不跨聊天发消息、不自行研究或监控。岗位配置不代表独立权限沙箱或专业能力已全面验收。 本轮仅完成文件读取，未开展审计、研究或能力实测。"
+    },
+    {
+      "roleId": "data-engineer",
+      "title": "行情与数据工程师",
+      "threadId": "01a14425-cf0f-7973-a683-1e37a95676c3",
+      "projectId": "faa2176b-cfaa-4e05-ba6f-d0a4ebdf3ca1",
+      "status": "idle",
+      "turnId": "01a14425-d484-7b81-9201-faf04d39e529",
+      "completedAt": 1792144816,
+      "initializationReply": "初始化完成，待总控派单。 已完整读取根 AGENTS.md、团队章程、协作流程、能力清单、策略事实源，以及： 岗位：quant-team/roles/data-engineer.md 技能：quant-team/skills/point-in-time-audit/SKILL.md 职责：点时可用性、时间对齐、快照完整性、SQLite 分账与数据血缘核验。 三条核心边界： 本轮仅完成只读初始化；未开展审计、写入、服务操作或交易动作。 不读取凭据或封存样本；后续数据库核验只用只读连接与 SELECT，不初始化 Store、不补数据。 报告区分 FACT、INFERENCE、HYPOTHESIS、UNKNOWN，附时间与证据，披露失败、缺口和异议；遵循诚实与第一性原理。 岗位及技能已加载，不代表全部专业能力已验收，也不构成独立权限沙箱。"
+    },
+    {
+      "roleId": "backtest-statistician",
+      "title": "回测与统计验证专家",
+      "threadId": "01a14425-e0dd-70e3-a06e-4455a7175119",
+      "projectId": "faa2176b-cfaa-4e05-ba6f-d0a4ebdf3ca1",
+      "status": "idle",
+      "turnId": "01a14425-e65f-7ec1-b1e0-b09d4e0533fd",
+      "completedAt": 1792144830,
+      "initializationReply": "初始化完成，待总控派单。 已完整读取根 AGENTS.md、团队章程、协作流程、能力清单、策略事实源，以及： 岗位：backtest-statistician（回测与统计验证专家） 技能：backtest-validation 职责覆盖成本撮合、未来函数、走步样本外、过拟合、多重检验及统计不确定性。 三条核心边界： 本轮仅只读初始化；未写文件、运行回测、操作服务或交易。 不读取凭据或封存样本，不自动调参挑赢家，不把交易数量当独立样本或盈利证明。 遵循诚实证据与第一性原理；报告区分事实、推断、假设、未知，注明来源与限制，保留失败和反方意见。 本次仅完成岗位与技能加载，未验收全部专业能力；岗位配置不构成独立权限沙箱。"
+    },
+    {
+      "roleId": "risk-manager",
+      "title": "风险管理专家",
+      "threadId": "01a14427-e156-7752-992d-1d7eaf49eab4",
+      "projectId": "faa2176b-cfaa-4e05-ba6f-d0a4ebdf3ca1",
+      "status": "idle",
+      "turnId": "01a14427-e6b6-7d81-9e76-e43e2700559b",
+      "completedAt": 1792144953,
+      "initializationReply": "初始化完成，待总控派单。 已完整读取根 AGENTS.md、团队章程、协作流程、能力清单、策略事实源，以及： 岗位：quant-team/roles/risk-manager.md 技能：quant-team/skills/portfolio-risk-review/SKILL.md 负责风险口径、组合敞口、回撤、保护覆盖与强平边界审查，可提出阻断验收意见。 核心边界： 本轮仅只读初始化；未写文件、未开展审计或交易操作，不擅自调整仓位、止损或安全锁。 不读取凭据或封存样本，不创建子 Agent，不向其他聊天发送消息。 遵守诚实与第一性原理：区分事实、推断、假设、未知，结论附时间和证据，披露失败及分歧。 本次仅确认岗位与技能已加载，不代表专业能力已验收或权限已技术隔离。"
+    },
+    {
+      "roleId": "execution-engineer",
+      "title": "交易执行与后端工程师",
+      "threadId": "01a14427-f70c-7bc1-a135-a21bf392cdcd",
+      "projectId": "faa2176b-cfaa-4e05-ba6f-d0a4ebdf3ca1",
+      "status": "idle",
+      "turnId": "01a14428-020e-7160-97d9-ab248da78f1d",
+      "completedAt": 1792144974,
+      "initializationReply": "初始化完成，待总控派单。 已完整读取根 AGENTS.md、团队章程、协作流程、能力清单、策略事实源，以及岗位 execution-engineer 和技能 demo-execution-review。 职责：审查订单幂等、IOC/滑点、部分成交、止损/TP/BE、故障恢复及审计证据。 3条核心边界： 本轮仅只读初始化；不写文件、数据库或配置，不触发交易或启停服务。 不读取 .env、凭据或封存样本；不创建子 Agent，不向其他聊天发送消息。 遵循诚实证据与第一性原理；区分 FACT、INFERENCE、HYPOTHESIS、UNKNOWN，披露缺口与反证，结论附时间和来源。 本轮未开展执行审计；岗位与技能已读取，不代表专业能力已全部验收，也不构成独立权限沙箱。"
+    },
+    {
+      "roleId": "independent-qa",
+      "title": "独立测试与审查专家",
+      "threadId": "01a14428-120b-7fd1-930c-af3c95a68cd8",
+      "projectId": "faa2176b-cfaa-4e05-ba6f-d0a4ebdf3ca1",
+      "status": "idle",
+      "turnId": "01a14428-18cd-7762-8307-4e1528e2aa16",
+      "completedAt": 1792144964,
+      "initializationReply": "初始化完成，待总控派单。 已完整读取根 AGENTS.md、团队章程、协作流程、能力清单、策略事实源，以及： 岗位：quant-team/roles/independent-qa.md 技能：quant-team/skills/independent-qa/SKILL.md 负责独立核验证据、边界反例、契约一致性和失败披露。遵循诚实与证据、第一性原理；报告区分 FACT / INFERENCE / HYPOTHESIS / UNKNOWN，结论附来源、时间、范围及限制。 核心边界： 本轮只读；不改文件、数据库、策略或配置，不操作服务与订单。 不读取凭据或封存样本，不自行扩展任务、创建 Agent 或跨聊天发消息。 不独立验收自己实现的关键改动；岗位规范不代表技术沙箱隔离，初始化不代表专业能力已验收。 本轮仅完成文档读取，未开展审计、测试或运行状态验证。"
+    },
+    {
+      "roleId": "reliability-engineer",
+      "title": "运行可靠性专家",
+      "threadId": "01a14428-27c9-7fe3-a363-ff39b412e8c5",
+      "projectId": "faa2176b-cfaa-4e05-ba6f-d0a4ebdf3ca1",
+      "status": "idle",
+      "turnId": "01a14428-2db5-7b80-bf55-4dec8dc3c1b7",
+      "completedAt": 1792144969,
+      "initializationReply": "初始化完成，待总控派单。 已完整读取根 AGENTS.md、团队章程、协作流程、能力清单、策略事实源，以及： 岗位：reliability-engineer（运行可靠性专家） 技能：runtime-readonly-health 职责为核查嵌套健康字段、采集连续性、超时、共享限频和故障分级，提供带时间与证据的脱敏快照及恢复建议。 三条核心边界： 仅在具体派单范围内只读观察；不触发扫描、启停服务、解锁或交易操作。 不写文件、数据库或配置；不读取凭据、.env、封存样本，不创建子任务或跨聊天发送消息。 遵守诚实与第一性原理原则，分别标注事实、推断、假设、未知；缺字段标未知，单次 HTTP 200 不代表全部正常。 本轮仅完成文档初始化，未执行运行检查；岗位配置不代表独立权限沙箱或专业能力已全部验收。"
+    },
+    {
+      "roleId": "performance-analyst",
+      "title": "绩效归因与复盘专家",
+      "threadId": "01a14428-3e91-7733-ad8f-76ecaf632f81",
+      "projectId": "faa2176b-cfaa-4e05-ba6f-d0a4ebdf3ca1",
+      "status": "idle",
+      "turnId": "01a14428-450a-7e50-bbf3-38a50355376c",
+      "completedAt": 1792144976,
+      "initializationReply": "初始化完成，待总控派单。 已完整读取根 AGENTS.md、团队章程、协作流程、能力清单、策略事实源，以及： 岗位：quant-team/roles/performance-analyst.md 技能：quant-team/skills/performance-attribution/SKILL.md 负责净盈亏/净R、费用与Funding、MFE/MAE、来源组合及版本归因复盘。 核心边界： 本轮只读，不写文件、台账或配置，不执行交易、服务操作，不读取凭据或封存样本。 正式、研究、反事实及不同版本分别统计；缺失不填零，风险金额须对账，少样本不晋级盈利规律。 遵守诚实与第一性原理；分别标注事实、推断、假设、未知，附时间与证据，披露失败和异议。 本轮仅完成初始化，未开展业务审计或能力验收；岗位配置不构成独立权限沙箱。"
+    }
+  ]
+}

@@ -93,6 +93,13 @@ export function classifyExecutionAccountState(account, activeRuns = []) {
       for (const role of ["stop", "breakEvenStop", "takeProfit1", "takeProfit2"]) {
         claim(algoClaims, run.plan?.clientIds?.[role], run, "CLIENT_ALGO_ID", conflicts);
       }
+      for (const role of ["takeProfit1", "takeProfit2"]) {
+        const ids = run.protection?.tpRecovery?.[role]?.ids;
+        if (!Array.isArray(ids)) continue;
+        for (const id of ids) {
+          if (typeof id === "string" && id.length > 0) claim(algoClaims, id, run, "CLIENT_ALGO_ID", conflicts);
+        }
+      }
     }
   }
 

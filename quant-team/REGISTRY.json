@@ -1,0 +1,219 @@
+{
+  "team": "quant-team",
+  "version": "TEAM-R1",
+  "createdAt": "2026-10-16",
+  "scope": "DOCUMENT_DEPLOYMENT_AND_READONLY_ACCEPTANCE",
+  "maxConcurrentIncludingCommander": 4,
+  "modelPolicy": "inherit_parent_model; role is specialization instructions, not separate trained model",
+  "skillDiscovery": "project AGENTS.md explicit loading; no global installation",
+  "technicalIsolation": "shared workspace/tools; role limits are procedural",
+  "roles": [
+    {
+      "id": "commander",
+      "title": "团队总控",
+      "file": "roles/commander.md",
+      "skill": null,
+      "configuration": "CONFIGURED",
+      "acceptance": "PASS_LIMITED_TO_TEAM_READONLY_DEPLOYMENT",
+      "runtimeInstance": "/root",
+      "assignedChecks": "COMPLETED",
+      "evidence": "acceptance/2026-10-16-readonly.md",
+      "sidebarThread": {
+        "threadId": "01a0de95-140b-78b0-befd-55af63f485a9",
+        "hostId": "local",
+        "title": "量化开发团队总控",
+        "status": "ACTIVE_COORDINATOR"
+      }
+    },
+    {
+      "id": "quant-researcher",
+      "title": "量化策略研究员",
+      "file": "roles/quant-researcher.md",
+      "skill": "skills/quant-research/SKILL.md",
+      "configuration": "CONFIGURED",
+      "acceptance": "PARTIAL",
+      "runtimeInstance": null,
+      "assignedChecks": "COMPLETED",
+      "evidence": "acceptance/2026-10-16-readonly.md",
+      "sidebarThread": {
+        "threadId": "01a14425-85e4-7490-a627-3fdf759398be",
+        "hostId": "local",
+        "title": "量化策略研究员",
+        "status": "INITIALIZED_IDLE",
+        "projectId": "faa2176b-cfaa-4e05-ba6f-d0a4ebdf3ca1"
+      },
+      "historicalAcceptanceRuntime": "/root/research_worker"
+    },
+    {
+      "id": "data-engineer",
+      "title": "行情与数据工程师",
+      "file": "roles/data-engineer.md",
+      "skill": "skills/point-in-time-audit/SKILL.md",
+      "configuration": "CONFIGURED",
+      "acceptance": "PARTIAL",
+      "runtimeInstance": null,
+      "assignedChecks": "COMPLETED",
+      "evidence": "acceptance/2026-10-16-readonly.md",
+      "sidebarThread": {
+        "threadId": "01a14425-cf0f-7973-a683-1e37a95676c3",
+        "hostId": "local",
+        "title": "行情与数据工程师",
+        "status": "INITIALIZED_IDLE",
+        "projectId": "faa2176b-cfaa-4e05-ba6f-d0a4ebdf3ca1"
+      },
+      "historicalAcceptanceRuntime": "/root/evidence_worker"
+    },
+    {
+      "id": "backtest-statistician",
+      "title": "回测与统计验证专家",
+      "file": "roles/backtest-statistician.md",
+      "skill": "skills/backtest-validation/SKILL.md",
+      "configuration": "CONFIGURED",
+      "acceptance": "PARTIAL",
+      "runtimeInstance": null,
+      "assignedChecks": "COMPLETED",
+      "evidence": "acceptance/2026-10-16-readonly.md",
+      "sidebarThread": {
+        "threadId": "01a14425-e0dd-70e3-a06e-4455a7175119",
+        "hostId": "local",
+        "title": "回测与统计验证专家",
+        "status": "INITIALIZED_IDLE",
+        "projectId": "faa2176b-cfaa-4e05-ba6f-d0a4ebdf3ca1"
+      },
+      "historicalAcceptanceRuntime": "/root/methods_worker"
+    },
+    {
+      "id": "risk-manager",
+      "title": "风险管理专家",
+      "file": "roles/risk-manager.md",
+      "skill": "skills/portfolio-risk-review/SKILL.md",
+      "configuration": "CONFIGURED",
+      "acceptance": "PARTIAL",
+      "runtimeInstance": null,
+      "assignedChecks": "COMPLETED",
+      "evidence": "acceptance/2026-10-16-readonly.md",
+      "sidebarThread": {
+        "threadId": "01a14427-e156-7752-992d-1d7eaf49eab4",
+        "hostId": "local",
+        "title": "风险管理专家",
+        "status": "INITIALIZED_IDLE",
+        "projectId": "faa2176b-cfaa-4e05-ba6f-d0a4ebdf3ca1"
+      },
+      "historicalAcceptanceRuntime": "/root/methods_worker"
+    },
+    {
+      "id": "execution-engineer",
+      "title": "交易执行与后端工程师",
+      "file": "roles/execution-engineer.md",
+      "skill": "skills/demo-execution-review/SKILL.md",
+      "configuration": "CONFIGURED",
+      "acceptance": "PARTIAL",
+      "runtimeInstance": null,
+      "assignedChecks": "COMPLETED",
+      "evidence": "acceptance/2026-10-16-readonly.md",
+      "sidebarThread": {
+        "threadId": "01a14427-f70c-7bc1-a135-a21bf392cdcd",
+        "hostId": "local",
+        "title": "交易执行与后端工程师",
+        "status": "INITIALIZED_IDLE",
+        "projectId": "faa2176b-cfaa-4e05-ba6f-d0a4ebdf3ca1"
+      },
+      "historicalAcceptanceRuntime": "/root/research_worker"
+    },
+    {
+      "id": "independent-qa",
+      "title": "独立测试与审查专家",
+      "file": "roles/independent-qa.md",
+      "skill": "skills/independent-qa/SKILL.md",
+      "configuration": "CONFIGURED",
+      "acceptance": "PASS_LIMITED_TO_TEAM_READONLY_DEPLOYMENT",
+      "runtimeInstance": null,
+      "assignedChecks": "COMPLETED",
+      "evidence": "acceptance/2026-10-16-readonly.md",
+      "sidebarThread": {
+        "threadId": "01a14428-120b-7fd1-930c-af3c95a68cd8",
+        "hostId": "local",
+        "title": "独立测试与审查专家",
+        "status": "INITIALIZED_IDLE",
+        "projectId": "faa2176b-cfaa-4e05-ba6f-d0a4ebdf3ca1"
+      },
+      "historicalAcceptanceRuntime": "/root/methods_worker"
+    },
+    {
+      "id": "reliability-engineer",
+      "title": "运行可靠性专家",
+      "file": "roles/reliability-engineer.md",
+      "skill": "skills/runtime-readonly-health/SKILL.md",
+      "configuration": "CONFIGURED",
+      "acceptance": "PARTIAL",
+      "runtimeInstance": null,
+      "assignedChecks": "COMPLETED",
+      "evidence": "acceptance/2026-10-16-readonly.md",
+      "sidebarThread": {
+        "threadId": "01a14428-27c9-7fe3-a363-ff39b412e8c5",
+        "hostId": "local",
+        "title": "运行可靠性专家",
+        "status": "INITIALIZED_IDLE",
+        "projectId": "faa2176b-cfaa-4e05-ba6f-d0a4ebdf3ca1"
+      },
+      "historicalAcceptanceRuntime": "/root/evidence_worker"
+    },
+    {
+      "id": "performance-analyst",
+      "title": "绩效归因与复盘专家",
+      "file": "roles/performance-analyst.md",
+      "skill": "skills/performance-attribution/SKILL.md",
+      "configuration": "CONFIGURED",
+      "acceptance": "PARTIAL",
+      "runtimeInstance": null,
+      "assignedChecks": "COMPLETED",
+      "evidence": "acceptance/2026-10-16-readonly.md",
+      "sidebarThread": {
+        "threadId": "01a14428-3e91-7733-ad8f-76ecaf632f81",
+        "hostId": "local",
+        "title": "绩效归因与复盘专家",
+        "status": "INITIALIZED_IDLE",
+        "projectId": "faa2176b-cfaa-4e05-ba6f-d0a4ebdf3ca1"
+      },
+      "historicalAcceptanceRuntime": "/root/evidence_worker"
+    }
+  ],
+  "optionalRoles": [
+    {
+      "id": "frontend-specialist",
+      "status": "NOT_DEPLOYED",
+      "activation": "notify user with scope, capabilities and acceptance before adding"
+    }
+  ],
+  "runtimeDesign": {
+    "configuredExpertRoles": 8,
+    "method": "TEAM-001 used 3 staged subagent workers; TEAM-002 registered 8 independent expert tasks, initialized and idle; commander dispatches concrete work",
+    "persistentDaemon": false,
+    "modelOverride": false,
+    "historicalAcceptanceWorkerInstances": 3,
+    "sidebarExpertThreads": 8,
+    "concurrencyScope": "4 limit applies to collaboration subagents including commander; sidebar tasks are separate task entries, not 8 resident subagents"
+  },
+  "deploymentValidation": {
+    "configuration": "PASS",
+    "skillsFormat": "8/8 PASS",
+    "references": "17 role/skill + 24 shared PASS",
+    "readonlyCollaboration": "PASS",
+    "systemProfitability": "NOT_VALIDATED",
+    "systemRiskDenominator": "FAIL_EXISTING_P1",
+    "report": "acceptance/2026-10-16-readonly.md"
+  },
+  "sidebarDeployment": {
+    "task": "TEAM-002",
+    "projectId": "faa2176b-cfaa-4e05-ba6f-d0a4ebdf3ca1",
+    "commanderThreadId": "01a0de95-140b-78b0-befd-55af63f485a9",
+    "status": "COMPLETE",
+    "createdCount": 8,
+    "initialization": "READONLY_STARTUP_THEN_IDLE",
+    "worktreeCreated": false,
+    "modelOverride": false,
+    "initializedCount": 8,
+    "verifiedAtUtc": "2026-10-16 10:03:49 UTC",
+    "evidence": "acceptance/2026-10-16-sidebar-initialization.json"
+  }
+}

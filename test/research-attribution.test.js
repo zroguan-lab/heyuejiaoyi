@@ -21,6 +21,56 @@ function trade(overrides = {}) {
   };
 }
 
+test("缺R来源样本保留分母，未知指标保持null，真实0有效", () => {
+  const rows = Array.from({ length: 100 }, (_, index) => trade({
+    pnl: { net: index === 0 ? 0 : null, netR: index === 0 ? 0 : null },
+    mfeR: null, maeR: null, openedAt: null, closedAt: null, demoPromotion: null,
+  }));
+  const result = buildOpportunitySourceAttribution(rows);
+  const group = result.combinations[0];
+  assert.equal(group.trades, 100);
+  assert.equal(group.avgNetR, 0);
+  assert.equal(group.winRate, 0);
+  assert.equal(group.coverage.netR.missing, 99);
+  assert.equal(group.coverage.netPnl.valid, 1);
+  assert.equal(group.sampleStatus, "INCOMPLETE_METRICS");
+  assert.equal(result.formalObservationCount, 0);
+  assert.equal(group.groupMaxDrawdownR, null);
+  assert.equal(group.maxDrawdownContributionR, null);
+  assert.equal(group.avgMfeR, null);
+  assert.equal(group.avgCostR, null);
+  assert.equal(group.avgHoldingMinutes, null);
+  assert.equal(group.profitFactor, null);
+  assert.equal(group.profitFactorReason, "NO_LOSSES");
+  assert.equal(buildOpportunitySourceAttribution([]).coverage.netR.coverage, null);
+});
+
+test("组回撤是独立曲线，不能相加为组合回撤", () => {
+  const rows = [
+    trade({ closedAt: 1, pnl: { net: -1, netR: -1 }, candidateSources: [], marketRadar: { opportunitySources: ["A"] } }),
+    trade({ closedAt: 2, pnl: { net: 1, netR: 1 }, marketRadar: { opportunitySources: ["B"] } }),
+    trade({ closedAt: 3, pnl: { net: 1, netR: 1 }, marketRadar: { opportunitySources: ["A"] } }),
+    trade({ closedAt: 4, pnl: { net: -1, netR: -1 }, marketRadar: { opportunitySources: ["B"] } }),
+  ];
+  const groups = buildOpportunitySourceAttribution(rows).combinations;
+  assert.equal(groups.reduce((sum, group) => sum + group.groupMaxDrawdownR, 0), 2);
+  const combined = buildOpportunitySourceAttribution(rows.map((row) => ({ ...row, marketRadar: { opportunitySources: ["ALL"] } }))).combinations[0];
+  assert.equal(combined.groupMaxDrawdownR, 1);
+  assert.equal(combined.drawdownBasis, "INDEPENDENT_GROUP_CURVE_NON_ADDITIVE");
+  assert.equal(combined.maxDrawdownContributionR, combined.groupMaxDrawdownR);
+});
+
+test("缺PnL不可补零，路径统计显示缺失覆盖", () => {
+  const row = trade({ pnl: {}, mfeR: null, maeR: null });
+  const group = buildOpportunitySourceAttribution([row]).combinations[0];
+  assert.equal(group.winRate, null);
+  assert.equal(group.avgNetR, null);
+  assert.equal(group.profitFactorReason, "NO_VALID_NET_PNL");
+  const excursion = buildExcursionAttribution([row]);
+  assert.equal(excursion.coverage.mfeR.missing, 1);
+  assert.equal(excursion.winnerMedianMaeR, null);
+});
+
 test("来源组合使用完整排序组合且保留RETAINED并对小样本显式标记", () => {
   const first = trade();
   const second = trade({

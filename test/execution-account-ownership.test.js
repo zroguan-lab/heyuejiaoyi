@@ -50,6 +50,32 @@ function stopFor(runValue) {
   };
 }
 
+test("本run持久化的TP恢复ID归属明确，外部同币ID及错币保持unknown",()=>{
+  const btc=run("btc","BTCUSDT");
+  btc.protection={tpRecovery:{takeProfit2:{ids:["btc-tp2","btc-tp2-r1"],currentClientId:"btc-tp2-r1"}}};
+  const owned={symbol:"BTCUSDT",clientAlgoId:"btc-tp2-r1",status:"NEW",type:"TAKE_PROFIT_MARKET",side:"SELL"};
+  const state=account({positions:[{symbol:"BTCUSDT",quantity:1}],openAlgoOrders:[stopFor(btc),owned]});
+  const result=classifyExecutionAccountState(state,[btc]);
+  assert.equal(result.safe,true);
+  assert.equal(result.owned.algoOrders.find(x=>x.item===owned).runId,"btc");
+  state.openAlgoOrders.push({...owned,clientAlgoId:"btc-tp2-r99"});
+  assert.equal(classifyExecutionAccountState(state,[btc]).unknown[0].clientAlgoId,"btc-tp2-r99");
+  const wrongSymbol=classifyExecutionAccountState(account({openAlgoOrders:[{...owned,symbol:"ETHUSDT"}]}),[btc]);
+  assert.equal(wrongSymbol.unknown[0].kind,"ALGO_ORDER");
+  btc.protection.tpRecovery.takeProfit2.currentClientId="unpersisted-current";
+  assert.equal(classifyExecutionAccountState(account({openAlgoOrders:[{...owned,clientAlgoId:"unpersisted-current"}]}),[btc]).unknown.length,1);
+});
+
+test("不同run认领同一恢复ID产生冲突，不用同币归属兜底",()=>{
+  const btc=run("btc","BTCUSDT"),eth=run("eth","ETHUSDT");
+  for(const value of [btc,eth])value.protection={tpRecovery:{takeProfit1:{ids:["shared-r1"]}}};
+  const state=account({openAlgoOrders:[{symbol:"BTCUSDT",clientAlgoId:"shared-r1",status:"NEW"}]});
+  const result=classifyExecutionAccountState(state,[btc,eth]);
+  assert.equal(result.safe,false);
+  assert.deepEqual(result.conflicts,[{kind:"CLIENT_ALGO_ID",identity:"shared-r1",runIds:["btc","eth"]}]);
+  assert.throws(()=>assertAccountReadyForNewEntry(state,[btc,eth],{candidateSymbol:"SOLUSDT"}),/冲突/);
+});
+
 test("不同标的的已归属受保护仓位允许准备下一笔", () => {
   const btc = run("btc", "BTCUSDT", "LONG");
   const eth = run("eth", "ETHUSDT", "SHORT");

@@ -1,0 +1,58 @@
+{
+  "taskId": "TEAM-008",
+  "protocolId": "TEAM008_LONG_RADAR_VOLUME15M_GE_1_R1",
+  "protocolHash": "c31b3868cea9376d9157afd7e59d383dd4864c78a70799393e4105de8168fa5d",
+  "registeredAt": "2026-10-19T09:51:51.819Z",
+  "observedAt": "2026-10-19T09:54:57.429Z",
+  "status": "WAITING_FOR_FORWARD_DATA_AND_INSUFFICIENT_EXECUTABLE_PATHS",
+  "permissions": {
+    "orderSubmissionAllowed": false,
+    "liveStrategyModificationAllowed": false,
+    "promotionAllowed": false
+  },
+  "population": {
+    "allShadowSnapshots": 751,
+    "validExactLong": 49,
+    "seedPreRegistration": 49,
+    "forwardConfirmatory": 0,
+    "baselineEligible": 0,
+    "radarVolumeBelowOne": 38,
+    "radarVolumeBelowOneAndFrozenAccelerationPass": 16,
+    "targetOnlyBeforeScore": 3,
+    "targetOnlyDifferencesAtScore55": 2,
+    "immutablePlanCompleteAmongDifferences": 0
+  },
+  "effectiveDifferenceRows": [
+    {
+      "snapshotId": "decision-4967f0e87749796370d14d48bc54e68a20e30c1a7eeb15d5bff28a72f359494c",
+      "signalId": "32a81ae39d8954b36d693c01",
+      "symbol": "STBLUSDT",
+      "captureTime": "2026-10-18T10:26:41.719Z",
+      "cohort": "SEED_PRE_REGISTRATION",
+      "radarVolumeRatio15m": 0.8004,
+      "frozenVolumeAcceleration": 1.268,
+      "evaluationScore": 74,
+      "otherHardRejectionReasons": [],
+      "immutablePlanStatus": "MISSING_FROM_SHADOW_SNAPSHOT"
+    },
+    {
+      "snapshotId": "decision-dcb5e0fa6a829479f632882ce796a903a8cf04506f8a9efa9a6039873f074403",
+      "signalId": "bf23b1dae549cb6cc3d60029",
+      "symbol": "GTCUSDT",
+      "captureTime": "2026-10-18T12:14:55.682Z",
+      "cohort": "SEED_PRE_REGISTRATION",
+      "radarVolumeRatio15m": 0.3074,
+      "frozenVolumeAcceleration": 2.946,
+      "evaluationScore": 64,
+      "otherHardRejectionReasons": [],
+      "immutablePlanStatus": "MISSING_FROM_SHADOW_SNAPSHOT"
+    }
+  ],
+  "outcome": {
+    "pnl": null,
+    "netR": null,
+    "mfe": null,
+    "mae": null,
+    "reason": "Immutable SHADOW_DECISION snapshots contain planHash:null and no entry/SL/TP/quantity/risk/path. Missing outcomes are not zero."
+  }
+}

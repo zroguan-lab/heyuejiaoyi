@@ -16,7 +16,23 @@ function median(values) {
 }
 
 function netPnl(trade) {
-  return finite(trade?.netPnl) ?? finite(trade?.pnl?.net) ?? 0;
+  return finite(trade?.netPnl) ?? finite(trade?.pnl?.net);
+}
+
+export function metricCoverage(values) {
+  const total = values.length;
+  const valid = values.filter((value) => finite(value) !== null).length;
+  return { total, valid, missing: total - valid, coverage: total ? valid / total : null };
+}
+
+export function tradeMetricCoverage(trades) {
+  return Object.fromEntries(Object.entries({
+    netPnl, netR, mfeR: (trade) => trade?.mfeR, maeR: (trade) => trade?.maeR,
+    costR, holdingMinutes,
+    commission: (trade) => trade?.commission,
+    fundingPnl: (trade) => trade?.fundingPnl,
+    realizedPnl: (trade) => trade?.realizedPnl,
+  }).map(([key, getter]) => [key, metricCoverage(trades.map(getter))]));
 }
 
 function netR(trade) {
@@ -66,11 +82,12 @@ export function opportunitySourceCombination(trade) {
 }
 
 function drawdownR(trades) {
+  if (!trades.length || trades.some((trade) => netR(trade) === null)) return null;
   let equityR = 0;
   let peakR = 0;
   let maximum = 0;
   for (const trade of [...trades].sort((left, right) => (closedAt(left) ?? 0) - (closedAt(right) ?? 0))) {
-    equityR += netR(trade) ?? 0;
+    equityR += netR(trade);
     peakR = Math.max(peakR, equityR);
     maximum = Math.max(maximum, peakR - equityR);
   }
@@ -83,7 +100,7 @@ function average(values) {
 }
 
 function summarizeCombination(key, trades, minimumSample) {
-  const pnl = trades.map(netPnl);
+  const pnl = trades.map(netPnl).filter((value) => value !== null);
   const rValues = trades.map(netR).filter((value) => value !== null);
   const grossProfit = pnl.filter((value) => value > 0).reduce((sum, value) => sum + value, 0);
   const grossLoss = Math.abs(pnl.filter((value) => value < 0).reduce((sum, value) => sum + value, 0));
@@ -92,10 +109,17 @@ function summarizeCombination(key, trades, minimumSample) {
     combination: key,
     sources: key === "NONE" ? [] : key.split(" + "),
     trades: trades.length,
-    sampleStatus: trades.length >= minimumSample ? "FORMAL_OBSERVATION" : "LOW_SAMPLE",
-    winRate: trades.length ? round(wins / trades.length, 6) : 0,
-    avgNetR: round(average(rValues) ?? 0),
-    profitFactor: grossLoss > 0 ? round(grossProfit / grossLoss) : grossProfit > 0 ? null : 0,
+    sampleStatus: trades.length < minimumSample ? "LOW_SAMPLE" : rValues.length !== trades.length || pnl.length !== trades.length ? "INCOMPLETE_METRICS" : "FORMAL_OBSERVATION",
+    coverage: tradeMetricCoverage(trades),
+    winRate: pnl.length ? round(wins / pnl.length, 6) : null,
+    avgNetR: round(average(rValues)),
+    profitFactor: grossLoss > 0 ? round(grossProfit / grossLoss) : null,
+    profitFactorReason: grossLoss > 0 ? null : pnl.length ? "NO_LOSSES" : "NO_VALID_NET_PNL",
+    groupMaxDrawdownR: round(drawdownR(trades)),
+    drawdownBasis: "INDEPENDENT_GROUP_CURVE_NON_ADDITIVE",
+    groupMaxDrawdownRReason: !trades.length ? "NO_TRADES" : rValues.length !== trades.length ? "INCOMPLETE_NET_R" : null,
+    deprecatedFields: { maxDrawdownContributionR: "Use groupMaxDrawdownR; independent group curves are not additive contributions." },
+    // Deprecated compatibility alias; this is not an additive portfolio contribution.
     maxDrawdownContributionR: round(drawdownR(trades)),
     avgMfeR: round(average(trades.map((trade) => trade?.mfeR))),
     avgMaeR: round(average(trades.map((trade) => trade?.maeR))),
@@ -105,7 +129,7 @@ function summarizeCombination(key, trades, minimumSample) {
 }
 
 export function buildOpportunitySourceAttribution(trades = [], { minimumSample = 10 } = {}) {
-  const closed = trades.filter((trade) => trade?.status === "CLOSED" && netR(trade) !== null);
+  const closed = trades.filter((trade) => trade?.status === "CLOSED");
   const grouped = new Map();
   for (const trade of closed) {
     const key = opportunitySourceCombination(trade);
@@ -118,6 +142,8 @@ export function buildOpportunitySourceAttribution(trades = [], { minimumSample =
     .sort((left, right) => right.trades - left.trades || left.combination.localeCompare(right.combination));
   return {
     minimumFormalSample: minimumSample,
+    closedTrades: closed.length,
+    coverage: tradeMetricCoverage(closed),
     formalObservationCount: combinations.filter((item) => item.sampleStatus === "FORMAL_OBSERVATION").length,
     combinations,
   };
@@ -145,13 +171,13 @@ function distribution(values) {
     key: bucket.key,
     count: usable.filter((value) => value >= bucket.minimum && value < bucket.maximum).length,
   }));
-  return { count: usable.length, median: round(median(usable)), buckets };
+  return { count: usable.length, coverage: metricCoverage(values), median: round(median(usable)), buckets };
 }
 
 export function buildExcursionAttribution(trades = []) {
   const closed = trades.filter((trade) => trade?.status === "CLOSED");
   const stops = closed.filter(stopTrade);
-  const winners = closed.filter((trade) => netPnl(trade) > 0);
+  const winners = closed.filter((trade) => netPnl(trade) !== null && netPnl(trade) > 0);
   const withMfe = stops.filter((trade) => finite(trade?.mfeR) !== null);
   const proportion = (predicate) => withMfe.length
     ? round(withMfe.filter(predicate).length / withMfe.length, 6)
@@ -159,6 +185,14 @@ export function buildExcursionAttribution(trades = []) {
   return {
     modelVersion: "EXCURSION_ATTRIBUTION_R1",
     closedTrades: closed.length,
+    coverage: tradeMetricCoverage(closed),
+    pathCoverageNote: "Metric availability does not establish full historical path coverage; absent history remains unknown.",
+    statisticCoverage: {
+      stopMfeR: metricCoverage(stops.map((trade) => trade?.mfeR)),
+      winnerMaeR: metricCoverage(winners.map((trade) => trade?.maeR)),
+      timeToMfeMs: metricCoverage(closed.map((trade) => trade?.timeToMfeMs)),
+      timeToStopMs: metricCoverage(stops.map((trade) => trade?.timeToStopMs)),
+    },
     stopTrades: stops.length,
     stopTradesWithExcursion: withMfe.length,
     stopMedianMfeR: round(median(stops.map((trade) => trade?.mfeR))),

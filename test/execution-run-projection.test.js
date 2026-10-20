@@ -35,6 +35,7 @@ test("真实策略执行记录投影 Binance 成交、金额与净盈亏", () =>
       orderReasons: { entry: "1小时趋势与结构方向一致，15分钟突破结构高点，因此开仓做多。" },
     },
     entryOrder: { orderId: "entry-1", executedQuantity: 0.0012, averagePrice: null, price: 85_000, updateTime: 1_900 },
+    operatorCloseOrder: { orderId: "exit-1" },
     entryExecution: {
       mode: "MARKETABLE_LIMIT_IOC", timeInForce: "IOC", submittedLimitPrice: "85085",
       referencePrice: 85_000, spreadBps: 0.12, submittedAt: 1_800, completedAt: 1_900,
@@ -95,15 +96,16 @@ test("真实策略执行记录投影 Binance 成交、金额与净盈亏", () =>
   assert.equal(projected.commission, 0.08);
   assert.equal(projected.fundingPnl, -0.01);
   assert.equal(projected.netPnl, 0.03);
-  assert.equal(projected.netR, 0.03);
-  assert.equal(projected.mfeR, 0.5);
-  assert.equal(projected.maeR, 0.25);
-  assert.equal(projected.mfePrice, 85_500);
-  assert.equal(projected.maePrice, 84_750);
-  assert.equal(projected.timeToTp1Ms, 700);
-  assert.equal(projected.timeToTp2Ms, 1_000);
-  assert.equal(projected.maeBeforeTp1R, 0.25);
-  assert.equal(projected.maxFavorableExcursionBeforeExitR, 0.5);
+  // No initial stop or auditable path model in this legacy fixture.
+  assert.equal(projected.netR, null);
+  assert.equal(projected.mfeR, null);
+  assert.equal(projected.maeR, null);
+  assert.equal(projected.mfePrice, null);
+  assert.equal(projected.maePrice, null);
+  assert.equal(projected.timeToTp1Ms, null);
+  assert.equal(projected.timeToTp2Ms, null);
+  assert.equal(projected.maeBeforeTp1R, null);
+  assert.equal(projected.maxFavorableExcursionBeforeExitR, null);
   assert.equal(projected.barsHeld5m, 1);
   assert.equal(projected.excursionSamples, 8);
   assert.equal(projected.exitReason, "价格达到第二计划目标，因此平掉剩余仓位。");
@@ -142,7 +144,7 @@ test("人工金丝雀明确标记为技术验证且不计入策略绩效", () =>
   assert.equal(projected[0].unrealizedPnl, -0.05);
 });
 
-test("部分成交的 NetR、MFE 和 MAE 使用实际成交风险而非计划风险", () => {
+test("只有委托价的部分成交不能冒称实际风险或路径", () => {
   const projected = projectExecutionRun({
     id: "canary-partial-1",
     signalId: "signal-partial-1",
@@ -166,10 +168,10 @@ test("部分成交的 NetR、MFE 和 MAE 使用实际成交风险而非计划风
     result: { netPnl: 0.143985, trades: [] },
   });
 
-  assert.ok(Math.abs(projected.actualRisk - 0.38236) < 1e-8);
-  assert.ok(Math.abs(projected.netR - (0.143985 / 0.38236)) < 1e-8);
-  assert.ok(Math.abs(projected.mfeR - 0.5) < 1e-8);
-  assert.ok(Math.abs(projected.maeR - 0.25) < 1e-8);
+  assert.equal(projected.actualRisk, null);
+  assert.equal(projected.netR, null);
+  assert.equal(projected.mfeR, null);
+  assert.equal(projected.maeR, null);
   assert.equal(projected.performanceEligible, false);
   assert.equal(projected.executionException, "ENTRY_FILL_BELOW_MINIMUM");
 });
