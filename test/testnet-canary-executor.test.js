@@ -77,6 +77,7 @@ class FakeTradingClient {
       symbolConfig: { symbol: "BTCUSDT", marginType: "CROSSED", leverage: 20 },
     };
     this.order = null;
+    this.orders = new Map();
     this.algos = new Map();
     this.calls = { placeEntry: 0, cancelEntry: 0, placeAlgo: [], cancelAlgo: [], leverage: [], marginType: [], sequence: [], accountOverview: 0 };
     this.credentialFingerprint = "fake-credential-hash";
@@ -123,7 +124,7 @@ class FakeTradingClient {
   }
   async testLimitOrderPermission() { this.calls.permissionTests = (this.calls.permissionTests ?? 0) + 1; return { accepted: true }; }
   async queryOrder(_symbol, clientOrderId) {
-    return structuredClone(clientOrderId?.includes("-close") ? (this.closeOrder ?? null) : this.order);
+    return structuredClone(this.orders.get(clientOrderId) ?? (clientOrderId?.includes("-close") ? (this.closeOrder ?? null) : this.order));
   }
   async placeLimitOrder({ symbol, side, quantity, price, clientOrderId, timeInForce = "IOC" }) {
     this.calls.placeEntry += 1;
@@ -146,7 +147,7 @@ class FakeTradingClient {
     this.calls.closeMarket = (this.calls.closeMarket ?? 0) + 1;
     this.closeOrder = {
       symbol, side, originalQuantity: Number(quantity), executedQuantity: Number(quantity), averagePrice: 85_000,
-      clientOrderId, orderId: "close-1", status: "FILLED", type: "MARKET", reduceOnly: true,
+      clientOrderId, orderId: "9001", status: "FILLED", type: "MARKET", reduceOnly: true,
     };
     this.account.positions = [];
     return structuredClone(this.closeOrder);
@@ -212,15 +213,20 @@ class FakeTradingClient {
     }
     return { leverage: value };
   }
-  async listUserTrades() {
-    const rows = [{ id: "t1", orderId: this.order?.orderId, commission: 0.04, realizedPnl: 0, time: 9_000_000 }];
-    if (this.closeOrder) rows.push({ id: "t2", orderId: this.closeOrder.orderId, commission: 0.04, realizedPnl: -0.02, time: 9_000_100 });
+  async listUserTrades(_symbol, { startTime = 0, endTime = 9_000_300 } = {}) {
+    const symbol = this.order?.symbol ?? 'BTCUSDT';
+    const entrySide = this.order?.side ?? 'BUY';
+    const exitSide = entrySide === 'BUY' ? 'SELL' : 'BUY';
+    const quantity = Number(this.order?.executedQuantity ?? 0);
+    const rows = quantity > 0 ? [{ id: "1", orderId: this.order?.orderId, symbol, side: entrySide, quantity, price: Number(this.order.averagePrice) || 85000, commission: 0.04, commissionAsset: 'USDT', realizedPnl: 0, time: startTime + 60_000 }] : [];
+    if (this.closeOrder) rows.push({ id: "2", orderId: this.closeOrder.orderId, symbol, side: exitSide, quantity: Number(this.closeOrder.executedQuantity), price: 85000, commission: 0.04, commissionAsset: 'USDT', realizedPnl: -0.02, time: endTime });
     for (const algo of this.algos.values()) {
       if (this.hideAlgoTrades) continue;
-      if (algo.actualOrderId) rows.push({ id: `t-${algo.actualOrderId}`, orderId: algo.actualOrderId, commission: 0.04, realizedPnl: 1.2, time: 9_000_200 });
+      if (algo.actualOrderId) rows.push({ id: String(10000 + Number(algo.actualOrderId)), orderId: algo.actualOrderId, symbol: algo.symbol ?? symbol, side: algo.side ?? exitSide, quantity: Number(algo.actualQuantity), price: 85000, commission: 0.04, commissionAsset: 'USDT', realizedPnl: 1.2, time: endTime });
     }
     return [...rows, ...this.externalTrades];
   }
+  async listIncomeHistory() { return []; }
 }
 
 function protectedRun(id, symbol, direction = "LONG") {
@@ -241,8 +247,8 @@ function protectedRun(id, symbol, direction = "LONG") {
     status: "OPEN_PROTECTED",
     createdAt: 1_000_000,
     updatedAt: 1_000_000,
-    entryOrder: { symbol, orderId: `${id}-entry-order`, clientOrderId: clientIds.entry, executedQuantity: 1, status: "FILLED" },
-    plan: { direction, exitSide, clientIds, rules: { stepSize: 0.001 }, prices: { entry: "100" } },
+    entryOrder: { symbol, side: direction === 'LONG' ? 'BUY' : 'SELL', orderId: '8001', clientOrderId: clientIds.entry, executedQuantity: 1, status: "FILLED" },
+    plan: { direction, entrySide: direction === 'LONG' ? 'BUY' : 'SELL', exitSide, quantity: 1, clientIds, rules: { stepSize: 0.001 }, prices: { entry: "100" } },
     protection: { mode: "TWO_TARGETS", stop: null, takeProfit1: null, takeProfit2: null, breakEvenStop: null },
     exchange: null,
     result: null,
@@ -404,6 +410,7 @@ test("人工金丝雀与策略绩效隔离并可在保护后幂等主动平仓",
   assert.equal(prepared.run.performanceEligible, false);
   let run = await executor.execute(prepared.run.id, prepared.confirmationCode);
   client.order = { ...client.order, status: "FILLED", executedQuantity: 0.0012, averagePrice: 85_000 };
+  client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH" }];
   run = await executor.reconcile(run.id);
   assert.equal(run.status, "OPEN_PROTECTED");
   client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH" }];
@@ -427,6 +434,7 @@ test("真实策略 run 可持久化唯一 reduceOnly 意图后幂等主动平仓
   const prepared = await executor.prepare("btc-signal-exec");
   let run = await executor.execute(prepared.run.id, prepared.confirmationCode);
   client.order = { ...client.order, status: "FILLED", executedQuantity: 0.0012, averagePrice: 85_000 };
+  client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH" }];
   run = await executor.reconcile(run.id);
   client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH", marginType: "ISOLATED" }];
   await assert.rejects(() => executor.closeExecutionRun(run.id), /主动平仓原因/);
@@ -436,8 +444,8 @@ test("真实策略 run 可持久化唯一 reduceOnly 意图后幂等主动平仓
   assert.match(run.plan.clientIds.operatorClose, /^cfs-[A-Za-z0-9_-]+-close$/);
   assert.equal(run.operatorCloseOrder.reduceOnly, true);
   assert.equal(run.result.accountingComplete, true);
-  assert.deepEqual(run.result.ownedOrderIds, ["1", "close-1"]);
-  assert.deepEqual(run.result.trades.map((trade) => trade.orderId), ["1", "close-1"]);
+  assert.deepEqual(run.result.ownedOrderIds, ["1", "9001"]);
+  assert.deepEqual(run.result.trades.map((trade) => trade.orderId), ["1", "9001"]);
   assert.equal(client.calls.closeMarket, 1);
   assert.ok(store.audit.some((event) => event.eventType === "OPERATOR_CLOSE_INTENT_PERSISTED"));
   assert.equal(store.audit.find((event) => event.eventType === "OPERATOR_CLOSE_INTENT_PERSISTED").payload.reason,
@@ -456,6 +464,7 @@ test("平仓后交易所自动终止保护单时容忍一次 -2011 撤单竞态�
   const prepared = await executor.prepare("btc-signal-exec");
   let run = await executor.execute(prepared.run.id, prepared.confirmationCode);
   client.order = { ...client.order, status: "FILLED", executedQuantity: 0.0012, averagePrice: 85_000 };
+  client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH" }];
   run = await executor.reconcile(run.id);
   client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH", marginType: "ISOLATED" }];
   run = await executor.closeExecutionRun(run.id, "策略测试已完成且需要验证保护单清理，因此平掉当前Demo仓位。");
@@ -505,6 +514,8 @@ test("完整闭环只提交一次入场单，成交后先建止损，再建止�
 
   // Explicit exchange aggregate evidence for pre-settlement mark observations.
   client.order = { ...client.order, status: "FILLED", executedQuantity: 0.0012, averagePrice: 85_000, cumulativeQuote: 102 };
+  client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH" }];
+  client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH" }];
   run = await executor.reconcile(run.id);
   assert.equal(run.status, "OPEN_PROTECTED");
   assert.deepEqual(client.calls.placeAlgo.map((item) => item.role), ["stop", "tp2", "tp1"]);
@@ -520,7 +531,7 @@ test("完整闭环只提交一次入场单，成交后先建止损，再建止�
   assert.equal(client.calls.placeEntry, 1);
 
   const tp2Id = run.plan.clientIds.takeProfit2;
-  client.algos.set(tp2Id, { ...client.algos.get(tp2Id), status: "FINISHED", actualQuantity: 0.0012, actualOrderId: "tp2-order" });
+  client.algos.set(tp2Id, { ...client.algos.get(tp2Id), status: "FINISHED", actualQuantity: 0.0012, actualOrderId: "9002" });
   client.account.positions = [];
   run = await executor.reconcile(run.id);
   assert.equal(run.status, "CLOSED");
@@ -528,16 +539,16 @@ test("完整闭环只提交一次入场单，成交后先建止损，再建止�
   assert.equal(run.result.accountingComplete, true);
   assert.equal(run.result.exitRole, "takeProfit2");
   assert.match(run.result.exitReason, /平掉剩余仓位/);
-  assert.deepEqual(run.result.trades.map((trade) => trade.orderId), ["1", "tp2-order"]);
+  assert.deepEqual(run.result.trades.map((trade) => trade.orderId), ["1", "9002"]);
   assert.equal(run.performance.modelVersion, "TRADE_EXCURSION_R1");
-  // The legacy fake settlement rows have no execution prices/quantities.
-  // Keep only the real fixture mark observation; never synthesize TP2's price.
+  // Complete fills use the fixture's observed execution price (85000),
+  // never the virtual TP2 target. Entry and exit share the mock clock.
   assert.ok(Math.abs(run.performance.mfeR - 0.5) < 1e-8);
   assert.equal(run.performance.maeR, 0);
   assert.equal(run.performance.mfePrice, 85_500);
-  assert.equal(run.performance.timeToTp2Ms, null);
-  assert.equal(run.performance.maxFavorableExcursionBeforeExitR, null);
-  assert.equal(run.performance.maxAdverseExcursionBeforeExitR, null);
+  assert.equal(run.performance.timeToTp2Ms, 0);
+  assert.equal(run.performance.maxFavorableExcursionBeforeExitR, 0.5);
+  assert.equal(run.performance.maxAdverseExcursionBeforeExitR, 0);
   assert.ok(client.calls.cancelAlgo.length >= 2);
 });
 
@@ -549,7 +560,7 @@ async function tpRecoveryFixture() {
   const prepared = await executor.prepare("btc-signal-exec");
   const run = prepared.run;
   run.status = "PROTECTION_PENDING";
-  run.entryOrder = { orderId: "entry-fixture", executedQuantity: 0.0012, status: "FILLED", updateTime: time.now };
+  run.entryOrder = { orderId: "9006", executedQuantity: 0.0012, status: "FILLED", updateTime: time.now };
   client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH" }];
   return { time, store, client, executor, run };
 }
@@ -660,7 +671,7 @@ test("TP未知提交在重启后只查同ID，迟到订单被认领且不盲重�
 test("TP1部分成交或FINISHED不得补发，拒绝TP2仍可独立恢复", async () => {
   for(const status of ["NEW","FINISHED","CANCELED"]) {
     const { time, client, executor, run } = await tpRecoveryFixture();
-    client.algos.set(run.plan.clientIds.takeProfit1,{clientAlgoId:run.plan.clientIds.takeProfit1,algoId:"partial-tp1",status,actualQuantity:0.0003,actualOrderId:"tp1-child"});
+    client.algos.set(run.plan.clientIds.takeProfit1,{clientAlgoId:run.plan.clientIds.takeProfit1,algoId:"partial-tp1",status,actualQuantity:0.0003,actualOrderId:"9003"});
     client.algos.set(run.plan.clientIds.takeProfit2,{clientAlgoId:run.plan.clientIds.takeProfit2,algoId:"failed-tp2",status:"REJECTED",actualQuantity:0});
     await executor.ensureProtection(run,0.0012);time.now+=30_000;
     await executor.ensureProtection(run,0.0012);
@@ -676,17 +687,17 @@ test("恢复ID的成交和旧订单均归属本run，无仓时只清理不恢复
   await executor.ensureProtection(run,0.0012);time.now+=30_000;
   await executor.ensureProtection(run,0.0012);
   const replacement = run.protection.tpRecovery.takeProfit2.currentClientId;
-  client.algos.set(replacement,{...client.algos.get(replacement),status:"FINISHED",actualQuantity:0.0012,actualOrderId:"replacement-exit"});
+  client.algos.set(replacement,{...client.algos.get(replacement),status:"FINISHED",actualQuantity:0.0012,actualOrderId:"9004"});
   const protection = await executor.queryKnownProtection(run);
   run.protection={...run.protection,...protection};
   client.listUserTrades=async()=>[
-    {id:"entry",orderId:"entry-fixture",quantity:0.0012,side:"BUY",price:85000,commission:0,realizedPnl:0},
-    {id:"exit",orderId:"replacement-exit",quantity:0.0012,side:"SELL",price:89000,commission:0,realizedPnl:4.8},
+    {id:"101",orderId:"9006",symbol:'BTCUSDT',quantity:0.0012,side:"BUY",price:85000,commission:0,commissionAsset:'USDT',realizedPnl:0,time:time.now},
+    {id:"102",orderId:"9004",symbol:'BTCUSDT',quantity:0.0012,side:"SELL",price:89000,commission:0,commissionAsset:'USDT',realizedPnl:4.8,time:time.now},
     {id:"foreign",orderId:"external",commission:999,realizedPnl:999},
   ];
   const accounting = await executor.collectRunTrades(run);
   assert.equal(accounting.accountingComplete,true);
-  assert.deepEqual(accounting.trades.map(x=>x.id),["entry","exit"]);
+  assert.deepEqual(accounting.trades.map(x=>x.id),["101","102"]);
   assert.equal(executor.buildRunResult(accounting,run).exitRole,"takeProfit2");
   const before=client.calls.placeAlgo.length;
   client.account.positions=[];
@@ -726,7 +737,7 @@ test("TP1先成交后的BE顺序保持，下一轮独立恢复TP2且不重建TP1
   const {time,client,executor,run}=await tpRecoveryFixture();
   await executor.ensureProtection(run,0.0012);
   const tp1=run.plan.clientIds.takeProfit1,tp2=run.plan.clientIds.takeProfit2;
-  client.algos.set(tp1,{...client.algos.get(tp1),status:"FINISHED",actualQuantity:0.0006,actualOrderId:"tp1-child",updateTime:time.now});
+  client.algos.set(tp1,{...client.algos.get(tp1),status:"FINISHED",actualQuantity:0.0006,actualOrderId:"9003",updateTime:time.now});
   client.algos.set(tp2,{...client.algos.get(tp2),status:"REJECTED",actualQuantity:0});
   client.account.positions=[{symbol:"BTCUSDT",quantity:0.0006,positionSide:"BOTH"}];
   await executor.reconcileProtected(run);
@@ -749,7 +760,7 @@ test("TP1先成交后的BE顺序保持，下一轮独立恢复TP2且不重建TP1
 test("TP2已全量成交且仓位快照滞后时不恢复或新增TP1",async()=>{
   const {client,executor,run}=await tpRecoveryFixture();
   await executor.ensureProtection(run,0.0012);
-  client.algos.set(run.plan.clientIds.takeProfit2,{...client.algos.get(run.plan.clientIds.takeProfit2),status:"FINISHED",actualQuantity:0.0012,actualOrderId:"tp2-child"});
+  client.algos.set(run.plan.clientIds.takeProfit2,{...client.algos.get(run.plan.clientIds.takeProfit2),status:"FINISHED",actualQuantity:0.0012,actualOrderId:"9005"});
   run.status="PROTECTION_INCOMPLETE";
   const before=client.calls.placeAlgo.length;
   await executor.reconcileProtected(run);
@@ -834,18 +845,20 @@ test("结算逐笔观察乱序部分退出成交，虚拟TP价格不参与极值
     const prepared = await executor.prepare("btc-signal-exec");
     let run = await executor.execute(prepared.run.id, prepared.confirmationCode);
     client.order = { ...client.order, status: "FILLED", executedQuantity: 0.0012, averagePrice: 85_000, updateTime: clock };
+  client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH" }];
     run = await executor.reconcile(run.id);
-    for (const [role, id] of [["takeProfit1", "tp1-real"], ["takeProfit2", "tp2-real"]]) {
+    for (const [role, id] of [["takeProfit1", "9007"], ["takeProfit2", "9008"]]) {
       const key = run.plan.clientIds[role];
       client.algos.set(key, { ...client.algos.get(key), status: "FINISHED", actualQuantity: 0.0006, actualOrderId: id });
     }
     const rows = [
-      { id: "e", orderId: "1", side: "BUY", price: 85000, quantity: 0.0012, time: clock, commission: 0, realizedPnl: 0 },
-      { id: "a", orderId: "tp1-real", side: "SELL", price: 87000, quantity: 0.0003, time: clock + 100, commission: 0, realizedPnl: 0 },
-      { id: "b", orderId: "tp1-real", side: "SELL", price: 84500, quantity: 0.0003, time: clock + 200, commission: 0, realizedPnl: 0 },
-      { id: "c", orderId: "tp2-real", side: "SELL", price: 88000, quantity: 0.0006, time: clock + 300, commission: 0, realizedPnl: 0 },
+      { id: "101", orderId: "1", symbol: 'BTCUSDT', side: "BUY", price: 85000, quantity: 0.0012, time: clock, commission: 0, commissionAsset: 'USDT', realizedPnl: 0 },
+      { id: "102", orderId: "9007", symbol: 'BTCUSDT', side: "SELL", price: 87000, quantity: 0.0003, time: clock + 100, commission: 0, commissionAsset: 'USDT', realizedPnl: 0 },
+      { id: "103", orderId: "9007", symbol: 'BTCUSDT', side: "SELL", price: 84500, quantity: 0.0003, time: clock + 200, commission: 0, commissionAsset: 'USDT', realizedPnl: 0 },
+      { id: "104", orderId: "9008", symbol: 'BTCUSDT', side: "SELL", price: 88000, quantity: 0.0006, time: clock + 300, commission: 0, commissionAsset: 'USDT', realizedPnl: 0 },
     ];
     client.listUserTrades = async () => reversed ? [...rows].reverse() : rows;
+    executor.now = () => clock + 300;
     client.account.positions = [];
     run = await executor.reconcile(run.id);
     assert.equal(run.status, "CLOSED");
@@ -905,10 +918,11 @@ test("TP1 成交后撤销原止损并把剩余仓位止损移动到保本", asyn
   const prepared = await executor.prepare("btc-signal-exec");
   let run = await executor.execute(prepared.run.id, prepared.confirmationCode);
   client.order = { ...client.order, status: "FILLED", executedQuantity: 0.0012, averagePrice: 85_000 };
+  client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH" }];
   run = await executor.reconcile(run.id);
   client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0006, positionSide: "BOTH" }];
   const tp1Id = run.plan.clientIds.takeProfit1;
-  client.algos.set(tp1Id, { ...client.algos.get(tp1Id), status: "FINISHED", actualQuantity: 0.0006, actualPrice: 87_000 });
+  client.algos.set(tp1Id, { ...client.algos.get(tp1Id), status: "FINISHED", actualQuantity: 0.0006, actualOrderId: '9020', actualPrice: 87_000 });
   run = await executor.reconcile(run.id);
   assert.equal(run.status, "TP1_FILLED");
   assert.equal(run.protection.breakEvenStop.triggerPrice, 85_000);
@@ -931,10 +945,11 @@ test("保本止损创建失败时保留原止损，不产生无保护窗口", as
   const prepared = await executor.prepare("btc-signal-exec");
   let run = await executor.execute(prepared.run.id, prepared.confirmationCode);
   client.order = { ...client.order, status: "FILLED", executedQuantity: 0.0012, averagePrice: 85_000 };
+  client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH" }];
   run = await executor.reconcile(run.id);
   client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0006, positionSide: "BOTH" }];
   const tp1Id = run.plan.clientIds.takeProfit1;
-  client.algos.set(tp1Id, { ...client.algos.get(tp1Id), status: "FINISHED", actualQuantity: 0.0006, actualPrice: 87_000 });
+  client.algos.set(tp1Id, { ...client.algos.get(tp1Id), status: "FINISHED", actualQuantity: 0.0006, actualOrderId: '9020', actualPrice: 87_000 });
   client.failBreakEven = true;
   run = await executor.reconcile(run.id);
   assert.equal(run.status, "PROTECTION_INCOMPLETE");
@@ -965,7 +980,7 @@ test("进程重启后只按客户端订单号恢复，不会再次提交入场�
   assert.equal(client.calls.placeEntry, 1);
 });
 
-test("入场请求超时且交易所查不到订单时保持未知状态且绝不盲目重试", async () => {
+test("入场请求超时且交易所持续查不到订单时隔离冲突且绝不盲目重试", async () => {
   let clock = 4_000_000;
   const store = new MemoryStore(signalRecord(clock));
   const client = new FakeTradingClient();
@@ -980,8 +995,11 @@ test("入场请求超时且交易所查不到订单时保持未知状态且绝�
   assert.equal(client.calls.placeEntry, 1);
   clock += 120_001;
   run = await executor.reconcile(run.id);
-  assert.equal(run.status, "CANCELED");
-  assert.equal(run.result.reason, "ENTRY_SUBMISSION_NOT_FOUND");
+  assert.equal(run.status, "ENTRY_FACT_CONFLICT");
+  assert.equal(run.performanceEligible, false);
+  assert.equal(run.result.netPnl, null);
+  assert.equal(run.result.accountingComplete, false);
+  assert.ok((await store.listActiveExecutionRuns()).some(item => item.id === run.id));
   assert.equal(client.calls.placeEntry, 1);
 });
 
@@ -1057,7 +1075,7 @@ test("紧急停止后延迟出现的未知入场单会在恢复查询时立即�
   await executor.engageEmergencyStop("MANUAL");
   client.order = {
     symbol: "BTCUSDT", side: "BUY", originalQuantity: 0.0012, executedQuantity: 0,
-    price: 85_000, averagePrice: 0, clientOrderId: run.plan.clientIds.entry, orderId: "late-1", status: "NEW",
+    price: 85_000, averagePrice: 0, clientOrderId: run.plan.clientIds.entry, orderId: "9009", status: "NEW",
   };
   run = await executor.reconcile(run.id);
   assert.equal(client.calls.cancelEntry, 1);
@@ -1087,6 +1105,7 @@ test("交易所返回非活动止损时冻结新订单并自动仅减仓平仓",
   const prepared = await executor.prepare("btc-signal-exec");
   let run = await executor.execute(prepared.run.id, prepared.confirmationCode);
   client.order = { ...client.order, status: "FILLED", executedQuantity: 0.0012, averagePrice: 85_000 };
+  client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH" }];
   run = await executor.reconcile(run.id);
   client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH" }];
   client.algos.set(run.plan.clientIds.stop, { ...client.algos.get(run.plan.clientIds.stop), status: "CANCELED" });
@@ -1110,7 +1129,7 @@ test("止损已全量成交但仓位快照滞后时等待结算且不误触发�
   const stop = algoFor(run, "stop", {
     status: "FINISHED",
     actualQuantity: 1,
-    actualOrderId: "btc-stop-fill",
+    actualOrderId: "9010",
     updateTime: clock - 1_000,
   });
   const takeProfit1 = algoFor(run, "takeProfit1");
@@ -1145,6 +1164,7 @@ test("止损创建失败会冻结新订单、排除绩效并自动仅减仓平�
   const prepared = await executor.prepare("btc-signal-exec");
   let run = await executor.execute(prepared.run.id, prepared.confirmationCode);
   client.order = { ...client.order, status: "FILLED", executedQuantity: 0.0012, averagePrice: 85_000 };
+  client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH" }];
   client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH" }];
   client.failStop = true;
   run = await executor.reconcile(run.id);
@@ -1184,12 +1204,12 @@ test("一笔自然平仓只清理自己的保护单且不等待其他标的清�
   const closedTp2 = algoFor(closed, "takeProfit2", {
     status: "FINISHED",
     actualQuantity: 1,
-    actualOrderId: "btc-run-exit-order",
+    actualOrderId: "9011",
   });
   const siblingStop = algoFor(sibling, "stop");
   for (const algo of [closedStop, closedTp1, closedTp2, siblingStop]) client.algos.set(algo.clientAlgoId, algo);
-  client.order = { orderId: closed.entryOrder.orderId };
-  client.account.positions = [{ symbol: "ETHUSDT", quantity: -1 }];
+  client.order = structuredClone(closed.entryOrder);
+  client.account.positions = [{ symbol: "ETHUSDT", quantity: -1, positionSide: "BOTH" }];
   client.account.openAlgoOrders = [siblingStop];
   client.externalTrades = [{ id: "manual", orderId: "manual-order", commission: 50, realizedPnl: 999, time: 9_000_300 }];
   const executor = new TestnetCanaryExecutor({
@@ -1220,14 +1240,16 @@ test("一笔完成TP1只移动自己的止损且不触碰兄弟仓位保护", as
   store.runs.set(eth.id, structuredClone(eth));
   const client = new FakeTradingClient();
   const btcStop = algoFor(btc, "stop");
-  const btcTp1 = algoFor(btc, "takeProfit1", { status: "FINISHED", actualQuantity: 0.5, actualOrderId: "btc-tp1-order" });
+  const btcTp1 = algoFor(btc, "takeProfit1", { status: "FINISHED", actualQuantity: 0.5, actualOrderId: "9012" });
   const btcTp2 = algoFor(btc, "takeProfit2");
   const ethStop = algoFor(eth, "stop");
   for (const algo of [btcStop, btcTp1, btcTp2, ethStop]) client.algos.set(algo.clientAlgoId, algo);
   client.account.positions = [
-    { symbol: "BTCUSDT", quantity: 0.5 },
-    { symbol: "ETHUSDT", quantity: -1 },
+    { symbol: "BTCUSDT", quantity: 0.5, positionSide: "BOTH" },
+    { symbol: "ETHUSDT", quantity: -1, positionSide: "BOTH" },
   ];
+  client.orders.set(btc.plan.clientIds.entry, btc.entryOrder);
+  client.orders.set(eth.plan.clientIds.entry, eth.entryOrder);
   client.account.openAlgoOrders = [btcStop, btcTp2, ethStop];
   const executor = new TestnetCanaryExecutor({
     client,
@@ -1287,7 +1309,7 @@ test("紧急停止可在所有现有仓位均已归属且受保护时解除", as
   store.metadata.set("testnet_execution_emergency_stop", { active: true, reason: "MANUAL" });
   const client = new FakeTradingClient();
   const siblingStop = algoFor(sibling, "stop");
-  client.account.positions = [{ symbol: "ETHUSDT", quantity: -1 }];
+  client.account.positions = [{ symbol: "ETHUSDT", quantity: -1, positionSide: "BOTH" }];
   client.account.openAlgoOrders = [siblingStop];
   const executor = new TestnetCanaryExecutor({
     client,
@@ -1311,9 +1333,10 @@ test("仓位已关闭但成交明细尚未到达时保持对账中并在后续�
   const prepared = await executor.prepare("btc-signal-exec");
   let run = await executor.execute(prepared.run.id, prepared.confirmationCode);
   client.order = { ...client.order, status: "FILLED", executedQuantity: 0.0012, averagePrice: 85_000 };
+  client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH" }];
   run = await executor.reconcile(run.id);
   const tp2Id = run.plan.clientIds.takeProfit2;
-  client.algos.set(tp2Id, { ...client.algos.get(tp2Id), status: "FINISHED", actualQuantity: 0.0012, actualOrderId: "delayed-exit" });
+  client.algos.set(tp2Id, { ...client.algos.get(tp2Id), status: "FINISHED", actualQuantity: 0.0012, actualOrderId: "9013" });
   client.account.positions = [];
   client.hideAlgoTrades = true;
 
@@ -1340,9 +1363,11 @@ test("重启恢复会逐笔对账多个受保护仓位且不会重复提交入�
   client.algos.set(btcStop.clientAlgoId, btcStop);
   client.algos.set(ethStop.clientAlgoId, ethStop);
   client.account.positions = [
-    { symbol: "BTCUSDT", quantity: 1 },
-    { symbol: "ETHUSDT", quantity: -1 },
+    { symbol: "BTCUSDT", quantity: 1, positionSide: "BOTH" },
+    { symbol: "ETHUSDT", quantity: -1, positionSide: "BOTH" },
   ];
+  client.orders.set(btc.plan.clientIds.entry, btc.entryOrder);
+  client.orders.set(eth.plan.clientIds.entry, eth.entryOrder);
   client.account.openAlgoOrders = [btcStop, ethStop];
   const executor = new TestnetCanaryExecutor({
     client,

@@ -119,6 +119,7 @@ function executionStatusLabel(status) {
     OPERATOR_CLOSE_SUBMITTING: "提交平仓", OPERATOR_CLOSE_PENDING: "等待平仓",
     OPERATOR_CLOSE_UNKNOWN: "平仓结果未知", PROTECTION_CLEANUP_PENDING: "清理保护单",
     ACCOUNTING_PENDING: "等待成交账务",
+    ENTRY_FACT_PENDING: "等待入场事实核验", ENTRY_FACT_CONFLICT: "入场事实冲突（已隔离）",
     CANCELED: "未成交取消", REJECTED: "已拒绝", FAILED: "执行失败",
   })[status] ?? status ?? "未准备";
 }
@@ -260,6 +261,7 @@ function renderDemoTrades(items, performance = null) {
       Number.isFinite(trade.entryWaitMs) ? `入场等待 ${(trade.entryWaitMs / 1000).toFixed(1)} 秒` : null,
       trade.entryCancellationReason ? `撤单原因 ${trade.entryCancellationReason}` : null,
       trade.entryFactStatus ? `成交事实 ${trade.entryFactStatus} · ${trade.entryFactSource ?? trade.entryFactReason ?? "来源未知"}` : null,
+      trade.entryVerificationStatus ? `入场核验 ${trade.entryVerificationStatus} · 成交明细 ${trade.entryFillsStatus ?? "待核实"}` : null,
       Number.isFinite(trade.actualRisk) ? `初始实际风险 ${pnlFormatter.format(trade.actualRisk)} U（不等于保证金或保证最大亏损）` : trade.entryFactStatus ? "初始实际风险未知；净R不作确认" : null,
       Number.isFinite(trade.netR) ? `净结果 ${trade.netR >= 0 ? "+" : ""}${trade.netR.toFixed(3)}R` : null,
       Number.isFinite(trade.mfeR) && Number.isFinite(trade.maeR) ? `持仓波动 MFE ${trade.mfeR.toFixed(3)}R · MAE ${trade.maeR.toFixed(3)}R` : null,
@@ -331,7 +333,7 @@ function renderPerformance(performance, executionSummary = chartState.executionS
   elements.performanceTotalPnl.className = Number.isFinite(totalNetPnl) ? totalNetPnl >= 0 ? "metric-positive" : "metric-negative" : "";
   elements.performanceTradeCount.textContent = `${finalizedCount} 笔`;
   elements.performanceAccountingNote.textContent = executionSummary
-    ? `在途 ${executionSummary.open ?? 0} · 待对账 ${executionSummary.accountingPending ?? 0} · 未成交取消 ${executionSummary.canceledUnfilled ?? 0} · 排除 ${executionSummary.excluded ?? 0} · 执行失败 ${executionSummary.failed ?? 0} · 未知 ${executionSummary.submissionUnknown ?? 0}`
+    ? `在途 ${executionSummary.open ?? 0} · 待对账 ${executionSummary.accountingPending ?? 0} · 入场冲突 ${executionSummary.entryFactConflict ?? 0} · 未成交取消 ${executionSummary.canceledUnfilled ?? 0} · 排除 ${executionSummary.excluded ?? 0} · 执行失败 ${executionSummary.failed ?? 0} · 未知 ${executionSummary.submissionUnknown ?? 0}`
     : pendingCount
       ? `不含未平仓浮盈亏 · ${pendingCount} 笔在途/待对账`
       : "不含未平仓浮盈亏";

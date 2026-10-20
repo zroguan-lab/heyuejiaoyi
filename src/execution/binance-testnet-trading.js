@@ -32,6 +32,7 @@ const SIGNED_WRITE_OPERATIONS = new Set([
 const SIGNED_DRY_RUN_OPERATIONS = new Set(["POST /fapi/v1/order/test"]);
 
 function finiteNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -547,10 +548,14 @@ export class BinanceTestnetTradingClient {
     return await this.signedRequest("POST", "/fapi/v1/marginType", { symbol, marginType });
   }
 
-  async listUserTrades(symbol, { startTime = undefined } = {}) {
+  async listUserTrades(symbol, { startTime = undefined, endTime = undefined, fromId = undefined, orderId = undefined } = {}) {
     this.assertSymbol(symbol);
-    const rows = await this.signedRequest("GET", "/fapi/v1/userTrades", { symbol, startTime, limit: 1000 });
-    return (Array.isArray(rows) ? rows : []).map((item) => ({
+    if (fromId !== undefined && (startTime !== undefined || endTime !== undefined)) {
+      throw new TypeError("fromId 不能与 startTime/endTime 同时发送");
+    }
+    const rows = await this.signedRequest("GET", "/fapi/v1/userTrades", { symbol, startTime, endTime, fromId, orderId, limit: 1000 });
+    if (!Array.isArray(rows)) throw new TypeError("成交历史响应不是数组，完整性未知");
+    return rows.map((item) => ({
       id: String(item.id),
       orderId: String(item.orderId),
       symbol: item.symbol,
@@ -566,16 +571,18 @@ export class BinanceTestnetTradingClient {
     }));
   }
 
-  async listIncomeHistory(symbol, { incomeType = undefined, startTime = undefined, endTime = undefined } = {}) {
+  async listIncomeHistory(symbol, { incomeType = undefined, startTime = undefined, endTime = undefined, page = undefined } = {}) {
     this.assertSymbol(symbol);
     const rows = await this.signedRequest("GET", "/fapi/v1/income", {
       symbol,
       incomeType,
       startTime,
       endTime,
+      page,
       limit: 1000,
     });
-    return (Array.isArray(rows) ? rows : []).map((item) => ({
+    if (!Array.isArray(rows)) throw new TypeError("资金费历史响应不是数组，完整性未知");
+    return rows.map((item) => ({
       symbol: item.symbol,
       incomeType: item.incomeType,
       income: finiteNumber(item.income),

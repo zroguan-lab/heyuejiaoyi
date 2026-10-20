@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { executionFillFacts, executionExcursionFacts, ownedExitFills, observeOwnedExitFills } from "./execution-fill-facts.js";
+import { acquireExecutionProcessLock } from "./entry-fact-process-lock.js";
 import { EventEmitter } from "node:events";
 import { BinanceApiError, TestnetWriteDisabledError } from "./binance-testnet-trading.js";
 import { buildCanaryRun, buildOperatorCanaryRun, verifyConfirmation } from "./canary-plan.js";
@@ -38,8 +39,10 @@ import {
   observeTradeExcursion,
 } from "../domain/trade-excursion.js";
 
+const STORE_RUN_LOCKS = new WeakMap();
+
 const TERMINAL_STATUSES = new Set(["CLOSED", "CANCELED", "REJECTED", "FAILED"]);
-const ENTRY_STATUSES = new Set(["ENTRY_SUBMITTING", "SUBMISSION_UNKNOWN", "ENTRY_PENDING", "PARTIALLY_FILLED"]);
+const ENTRY_STATUSES = new Set(["ENTRY_SUBMITTING", "SUBMISSION_UNKNOWN", "ENTRY_PENDING", "PARTIALLY_FILLED", "ENTRY_FACT_PENDING", "ENTRY_FACT_CONFLICT"]);
 const PROTECTED_STATUSES = new Set([
   "PROTECTION_PENDING", "PROTECTION_INCOMPLETE", "OPEN_PROTECTED", "TP1_FILLED", "ERROR_UNPROTECTED",
   "OPERATOR_CLOSE_SUBMITTING", "OPERATOR_CLOSE_PENDING", "OPERATOR_CLOSE_UNKNOWN", "PROTECTION_CLEANUP_PENDING",
@@ -59,8 +62,14 @@ const UNSUPPORTED_LEVERAGE_EXCEPTION = "UNSUPPORTED_LEVERAGE";
 const PRE_ENTRY_FAILURE_EXCEPTION = "PRE_ENTRY_CONFIGURATION_FAILED";
 const UNPROTECTED_AUTO_CLOSE_REASON = "交易所未能建立有效止损保护，系统为避免无保护持仓扩大损失，立即使用仅减仓市价单平仓。";
 
+const finiteValue = value => value === null || value === undefined || String(value).trim() === "" || !Number.isFinite(Number(value)) ? null : Number(value);
+const validOrderId = value => /^[1-9][0-9]*$/.test(String(value ?? ""));
+const quantitiesEqual = (a, b) => Math.abs(a - b) <= Math.max(1e-9, Math.abs(b) * 1e-6);
+
 function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
+  return (error instanceof Error ? error.message : String(error))
+    .replace(/(https?:\/\/[^\s?]+)\?[^\s]+/g, "$1?[REDACTED]")
+    .replace(/((?:signature|apiKey|apiSecret|X-MBX-APIKEY)\s*[=:]\s*)[^\s&,]+/gi, "$1[REDACTED]");
 }
 
 function hashPlan(plan) {
@@ -331,8 +340,10 @@ export class TestnetCanaryExecutor extends EventEmitter {
       throw new TypeError("pullbackEntryTtlMs 必须是 30 秒到 15 分钟之间的毫秒数");
     }
     this.timer = null;
-    this.reconciling = new Set();
-    this.executing = new Set();
+    let locks = STORE_RUN_LOCKS.get(store);
+    if (!locks) { locks = { reconciling: new Set(), executing: new Set() }; STORE_RUN_LOCKS.set(store, locks); }
+    this.reconciling = locks.reconciling;
+    this.executing = locks.executing;
     this.lastReconcileAt = null;
     this.lastReconcileError = null;
   }
@@ -658,8 +669,13 @@ export class TestnetCanaryExecutor extends EventEmitter {
     return await execute();
   }
 
+  acquireProcessLock() {
+    if (!this.releaseProcessLock) this.releaseProcessLock = acquireExecutionProcessLock(this.store.filePath);
+  }
+
   async execute(runId, confirmationCode) {
     if (!this.enabled) throw new TestnetWriteDisabledError("executeCanary");
+    this.acquireProcessLock();
     if (this.executing.has(runId)) throw new Error(`执行记录 ${runId} 正在提交，拒绝并发执行`);
     this.executing.add(runId);
     let run = null;
@@ -728,6 +744,12 @@ export class TestnetCanaryExecutor extends EventEmitter {
         }
         run.status = "ENTRY_SUBMITTING";
         run.entryExecution.submittedAt = this.now();
+        run.entryFactVerification = {
+          status: "SUBMISSION_INTENT", checks: 0, history: [], submittedAt: this.now(),
+          accountFingerprint: this.client.credentialFingerprint
+            ? createHash("sha256").update(String(this.client.credentialFingerprint)).digest("hex") : null,
+          ack: null, ackReceivedAt: null,
+        };
         await this.persist(run, "ENTRY_INTENT_PERSISTED", {
           clientOrderId: run.plan.clientIds.entry,
           side: run.plan.entrySide,
@@ -768,7 +790,13 @@ export class TestnetCanaryExecutor extends EventEmitter {
           }
         }
         run.entryOrder = order;
-        run.status = order.status === "PARTIALLY_FILLED" ? "PARTIALLY_FILLED" : order.status === "FILLED" ? "PROTECTION_PENDING" : "ENTRY_PENDING";
+        run.entryFactVerification = {
+          ...run.entryFactVerification, status: "ACK_PENDING", checks: 0,
+          accountFingerprint: this.client.credentialFingerprint
+            ? createHash("sha256").update(String(this.client.credentialFingerprint)).digest("hex") : null,
+          ack: this.entryOrderSummary(order), ackReceivedAt: this.now(), history: [],
+        };
+        run.status = "ENTRY_PENDING";
         await this.persist(run, "ENTRY_ORDER_CONFIRMED", {
           orderId: order.orderId,
           clientOrderId: order.clientOrderId,
@@ -800,12 +828,19 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async reconcile(runId, { account = null } = {}) {
+    this.acquireProcessLock();
     if (this.executing.has(runId)) return await this.store.getExecutionRun(runId);
     if (this.reconciling.has(runId)) return await this.store.getExecutionRun(runId);
     this.reconciling.add(runId);
     try {
       const run = await this.store.getExecutionRun(runId);
       if (!run || TERMINAL_STATUSES.has(run.status)) return run;
+      if (run.status === "ACCOUNTING_PENDING" && !run.entryFactVerification) {
+        const snapshot = account ?? await this.client.fetchAccountState(run.symbol);
+        if (!(snapshot.positions ?? []).some(item => item.symbol === run.symbol
+          && Math.abs(Number(item.quantity ?? item.positionAmt)) > 0)) return run;
+        account = snapshot;
+      }
       await this.ensureRunOrderReasons(run);
       this.assertAllowedSymbol(run.symbol);
       if (run.status === "PREPARED") {
@@ -825,7 +860,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
           reason: run.result.reason,
         });
       }
-      if (ENTRY_STATUSES.has(run.status)) return await this.reconcileEntry(run, account);
+      if (ENTRY_STATUSES.has(run.status) || (run.entryExecution?.remainderPending && !run.status.startsWith("OPERATOR_CLOSE"))) return await this.reconcileEntry(run, account);
       if (PROTECTED_STATUSES.has(run.status)) return await this.reconcileProtected(run, account);
       return run;
     } finally {
@@ -833,53 +868,131 @@ export class TestnetCanaryExecutor extends EventEmitter {
     }
   }
 
+  entryOrderSummary(order) {
+    if (!order) return null;
+    return Object.fromEntries(["symbol", "side", "orderId", "clientOrderId", "status", "executedQuantity", "updateTime"]
+      .map(key => [key, order[key] ?? null]));
+  }
+
+  async verifyEntryFacts(run, account = null) {
+    const state = run.entryFactVerification ?? { status: "LEGACY_UNVERIFIED", checks: 0, history: [],
+      ack: this.entryOrderSummary(run.entryOrder), ackReceivedAt: run.entryExecution?.submittedAt ?? run.createdAt,
+      accountFingerprint: this.client.credentialFingerprint
+        ? createHash("sha256").update(String(this.client.credentialFingerprint)).digest("hex") : null };
+    const checkedAt = this.now();
+    let order = null, queryFailed = false;
+    try { order = await this.client.queryOrder(run.symbol, run.plan.clientIds.entry); }
+    catch { queryFailed = true; }
+    const snapshot = account ?? await this.client.fetchAccountState(run.symbol);
+    const position = (snapshot.positions ?? []).find(item => item.symbol === run.symbol
+      && Math.abs(Number(item.quantity ?? item.positionAmt)) > 0);
+    const activeRuns = typeof this.store.listActiveExecutionRuns === "function" ? await this.store.listActiveExecutionRuns() : [run];
+    const fingerprint = this.client.credentialFingerprint
+      ? createHash("sha256").update(String(this.client.credentialFingerprint)).digest("hex") : null;
+    const identityConflict = Boolean(state.accountFingerprint && state.accountFingerprint !== fingerprint)
+      || (snapshot.environment && snapshot.environment !== "TESTNET")
+      || (snapshot.authority && snapshot.authority !== "BINANCE_TESTNET")
+      || (snapshot.positionMode && snapshot.positionMode !== "ONE_WAY");
+    const signedQuantity = Number(position?.quantity ?? position?.positionAmt);
+    const maximumQuantity = positiveNumber(run.plan?.quantity);
+    const positionConflict = position && ((signedQuantity > 0 ? "LONG" : "SHORT") !== run.plan.direction
+      || position.positionSide !== "BOTH"
+      || (maximumQuantity !== null && Math.abs(signedQuantity) > maximumQuantity + Number(run.plan.rules?.stepSize ?? 0) / 2)
+      || activeRuns.some(other => other.id !== run.id && other.symbol === run.symbol && !TERMINAL_STATUSES.has(other.status)));
+    if (identityConflict || positionConflict) {
+      state.status = "IDENTITY_CONFLICT"; state.lastCheckedAt = checkedAt;
+      state.history = [...(state.history ?? []), { checkedAt, status: state.status }].slice(-32);
+      run.entryFactVerification = state;
+      run.status = "ENTRY_FACT_CONFLICT"; run.performanceEligible = false; run.executionException = "ENTRY_FACT_CONFLICT";
+      run.error = "账户身份或仓位归属与入场意图冲突";
+      run.result = { ...(run.result ?? {}), accountingComplete: false, netPnl: null, netR: null };
+      await this.persist(run, "ENTRY_FACT_CONFLICT", { checkedAt, reason: identityConflict ? "ACCOUNT_IDENTITY_CHANGED" : "POSITION_OWNERSHIP_CONFLICT" });
+      return { pending: true, position: null, order: null };
+    }
+    const identityMatches = order && order.clientOrderId === run.plan.clientIds.entry
+      && order.symbol === run.symbol && order.side === run.plan.entrySide
+      && validOrderId(order.orderId)
+      && (!validOrderId(state.ack?.orderId) || String(order.orderId) === String(state.ack.orderId));
+    let fillsConfirmed = false;
+    // Protection always precedes the potentially slow trade-history request.
+    if (!position && !identityMatches && !queryFailed && validOrderId(run.entryOrder?.orderId)) {
+      try {
+        const accounting = await this.collectRunTrades(run);
+        const entryFills = accounting.trades.filter(t => String(t.orderId) === String(run.entryOrder.orderId));
+        fillsConfirmed = accounting.tradesComplete && entryFills.length > 0
+          && entryFills.every(t => validOrderId(t.id) && t.symbol === run.symbol && t.side === run.plan.entrySide
+            && finiteValue(t.quantity) > 0 && finiteValue(t.price) > 0 && finiteValue(t.time) !== null
+            && Number(t.time) >= Number(run.entryExecution?.submittedAt ?? run.createdAt))
+          && quantitiesEqual(entryFills.reduce((sum, t) => sum + Number(t.quantity), 0), Number(run.entryOrder.executedQuantity));
+      } catch { queryFailed = true; }
+    }
+    state.checks = Number(state.checks ?? 0) + 1;
+    state.firstCheckedAt ??= checkedAt;
+    state.lastCheckedAt = checkedAt;
+    state.status = identityMatches ? "ORDER_VERIFIED" : position ? "POSITION_PRESENT_FILLS_PENDING"
+      : fillsConfirmed ? "FILLS_VERIFIED" : queryFailed ? "QUERY_UNAVAILABLE" : "ABSENCE_PENDING";
+    if (identityMatches || position || fillsConfirmed || queryFailed) state.missingSince = null;
+    else state.missingSince ??= checkedAt;
+    state.history = [...(state.history ?? []), { checkedAt, status: state.status,
+      order: this.entryOrderSummary(order), positionPresent: Boolean(position), fillsConfirmed }].slice(-32);
+    run.entryFactVerification = state;
+    if (!identityMatches && !position && !fillsConfirmed) {
+      const conflict = state.missingSince !== null && checkedAt - state.missingSince >= SUBMISSION_UNKNOWN_TIMEOUT_MS && state.checks >= 2;
+      run.status = conflict ? "ENTRY_FACT_CONFLICT" : state.ack ? "ENTRY_FACT_PENDING" : "SUBMISSION_UNKNOWN";
+      if (conflict) { run.performanceEligible = false; run.executionException = "ENTRY_FACT_CONFLICT"; }
+      run.error = conflict ? "入场ACK与交易所订单、成交及仓位事实持续冲突" : "等待交易所入场事实核验";
+      run.result = { ...(run.result ?? {}), accountingComplete: false, netPnl: null, netR: null };
+      await this.persist(run, run.status, { checkedAt, queryFailed, checks: state.checks, missingSince: state.missingSince });
+      return { pending: true, position: null, order: null };
+    }
+    if (identityMatches) run.entryOrder = order;
+    await this.persist(run, "ENTRY_FACT_CHECKED", { checkedAt, status: state.status, positionPresent: Boolean(position) });
+    return { pending: false, position, order: identityMatches ? order : null, snapshot };
+  }
+
+  async observeEntryFillVerification(run) {
+    if (!run.entryFactVerification) return run;
+    const checkedAt = this.now();
+    let status = "QUERY_UNAVAILABLE", quantity = null, count = null;
+    try {
+      const accounting = await this.collectRunTrades(run);
+      const rows = accounting.trades.filter(t => String(t.orderId) === String(run.entryOrder?.orderId));
+      count = rows.length;
+      const valid = rows.every(t => validOrderId(t.id) && t.symbol === run.symbol && t.side === run.plan.entrySide
+        && finiteValue(t.quantity) > 0 && finiteValue(t.price) > 0 && finiteValue(t.time) !== null
+        && Number(t.time) >= Number(run.entryExecution?.submittedAt ?? run.createdAt));
+      quantity = valid ? rows.reduce((sum, t) => sum + Number(t.quantity), 0) : null;
+      status = !valid ? "CONFLICT" : !count ? "DELAYED"
+        : accounting.tradesComplete && quantitiesEqual(quantity, Number(run.entryOrder?.executedQuantity)) ? "VERIFIED" : "INCOMPLETE";
+    } catch {}
+    run.entryFactVerification.fills = { status, quantity, count, checkedAt };
+    return await this.persist(run, "ENTRY_FILLS_CHECKED", { status, quantity, count, checkedAt });
+  }
+
   async reconcileEntry(run, account = null) {
     const symbol = this.assertAllowedSymbol(run.symbol);
     const clientOrderId = run.plan.clientIds.entry;
-    let order = (account?.openOrders ?? []).find((item) => item.symbol === symbol && item.clientOrderId === clientOrderId) ?? null;
-    if (!order) order = await this.client.queryOrder(symbol, clientOrderId);
-    if (!order) {
-      if (run.status === "SUBMISSION_UNKNOWN") {
-        const submittedAt = Number(run.entryExecution?.submittedAt);
-        if (!Number.isFinite(submittedAt) || submittedAt <= 0) {
-          run.status = "FAILED";
-          run.performanceEligible = false;
-          run.executionException = PRE_ENTRY_FAILURE_EXCEPTION;
-          run.error = run.error ?? "入场订单提交前配置失败";
-          run.result = { reason: "PRE_ENTRY_CONFIGURATION_FAILED", filledQuantity: 0 };
-          return await this.persist(run, "PRE_ENTRY_CONFIGURATION_RECOVERED", {
-            reason: run.result.reason,
-            clientOrderId,
-          });
-        }
-        if (this.now() - submittedAt < SUBMISSION_UNKNOWN_TIMEOUT_MS) return run;
-        const snapshot = account ?? await this.client.fetchAccountState(symbol);
-        const position = (snapshot.positions ?? []).find((item) => (
-          item.symbol === symbol && Math.abs(Number(item.quantity ?? item.positionAmt ?? 0)) > 0
-        ));
-        const matchingOpenOrder = (snapshot.openOrders ?? []).find((item) => (
-          item.symbol === symbol && item.clientOrderId === clientOrderId
-        ));
-        if (position || matchingOpenOrder) return run;
-        run.status = "CANCELED";
-        run.performanceEligible = false;
-        run.error = null;
-        run.entryExecution = {
-          ...(run.entryExecution ?? {}),
-          completedAt: this.now(),
-          cancellationReason: "ENTRY_SUBMISSION_NOT_FOUND",
-        };
-        run.result = { reason: "ENTRY_SUBMISSION_NOT_FOUND", filledQuantity: 0 };
-        return await this.persist(run, "ENTRY_SUBMISSION_ABSENCE_CONFIRMED", {
-          clientOrderId,
-          submittedAt,
-          timeoutMs: SUBMISSION_UNKNOWN_TIMEOUT_MS,
-        });
-      }
-      run.status = "SUBMISSION_UNKNOWN";
-      run.error = "交易所暂时查不到已持久化的入场订单";
-      return await this.persist(run, "ENTRY_ORDER_NOT_FOUND", { clientOrderId });
+    if (run.status === "SUBMISSION_UNKNOWN" && !(Number(run.entryExecution?.submittedAt) > 0) && !run.entryOrder) {
+      run.status = "FAILED"; run.performanceEligible = false; run.executionException = PRE_ENTRY_FAILURE_EXCEPTION;
+      run.error = "入场订单提交前配置失败";
+      run.result = { reason: "PRE_ENTRY_CONFIGURATION_FAILED", filledQuantity: 0 };
+      return await this.persist(run, "PRE_ENTRY_CONFIGURATION_RECOVERED", { clientOrderId, reason: run.result.reason });
     }
+    const facts = await this.verifyEntryFacts(run, account);
+    if (facts.pending) return run;
+    let order = facts.order;
+    if (facts.position) {
+      run.entryExecution = { ...(run.entryExecution ?? {}), remainderPending: !order || !isTerminalOrder(order.status) };
+      run.status = "PROTECTION_PENDING";
+      const protectedRun = await this.ensureProtection(run, Math.abs(Number(facts.position.quantity ?? facts.position.positionAmt)),
+        { stopOnly: !order || !isTerminalOrder(order.status) });
+      if (!order || protectedRun.status === "ERROR_UNPROTECTED"
+        || protectedRun.status.startsWith("OPERATOR_CLOSE")) {
+        await this.observeEntryFillVerification(protectedRun);
+        return protectedRun;
+      }
+    }
+    if (!order) { run.status = "PROTECTION_PENDING"; return await this.reconcileProtected(run, facts.snapshot); }
     const emergencyStopped = await this.isEmergencyStopped();
     const expiresAt = entryOrderExpiresAt(run.plan);
     let invalidation = null;
@@ -913,7 +1026,18 @@ export class TestnetCanaryExecutor extends EventEmitter {
       }, this.now());
     }
     run.entryOrder = order;
+    run.entryExecution = { ...(run.entryExecution ?? {}), remainderPending: !isTerminalOrder(order.status) };
     const filledQuantity = Number(order.executedQuantity ?? 0);
+    if (!(filledQuantity > 0) && facts.position) {
+      run.entryExecution.remainderPending = true;
+      run.status = "ENTRY_FACT_PENDING";
+      run.error = "仓位已建立全仓止损，等待入场累计成交事实确认";
+      return await this.persist(run, "ENTRY_POSITION_QUANTITY_PENDING", { positionQuantity: Math.abs(Number(facts.position.quantity ?? facts.position.positionAmt)), orderStatus: order.status });
+    }
+    if (filledQuantity > 0 && isTerminalOrder(order.status) && !facts.position) {
+      run.status = "PROTECTION_PENDING";
+      return await this.reconcileProtected(run, facts.snapshot);
+    }
     if (filledQuantity > 0 && (order.status === "FILLED" || isTerminalOrder(order.status))) {
       const metrics = updateExecutionMetrics(run, this.minimumFillRatio);
       run.entryExecution = {
@@ -921,7 +1045,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
         completedAt: Number(order.updateTime) || this.now(),
         cancellationReason: order.status === "FILLED" ? null : cancelReason,
       };
-      run.status = "PROTECTION_PENDING";
+      if (!facts.position) run.status = "PROTECTION_PENDING";
       run.error = null;
       await this.persist(run, "ENTRY_FILL_FINALIZED", {
         status: order.status,
@@ -934,7 +1058,9 @@ export class TestnetCanaryExecutor extends EventEmitter {
         slippageBps: metrics?.slippageBps ?? null,
         timeToFillMs: metrics?.timeToFillMs ?? null,
       });
-      const protectedRun = await this.ensureProtection(run, filledQuantity);
+      const protectedRun = facts.position && run.protection?.phase !== "ENTRY_REMAINDER_PENDING"
+        ? run : await this.ensureProtection(run, filledQuantity);
+      await this.observeEntryFillVerification(protectedRun);
       if (!excludeUndersizedStrategyFill(protectedRun, metrics)) return protectedRun;
       await this.persist(protectedRun, "EXECUTION_SAMPLE_EXCLUDED", {
         reason: UNDERSIZED_FILL_EXCEPTION,
@@ -1092,13 +1218,8 @@ export class TestnetCanaryExecutor extends EventEmitter {
     return await this.deferTakeProfit(run, key, state, "TERMINAL_" + order.status);
   }
 
-  async ensureProtection(run, filledQuantity) {
-    const numericPrices = {
-      takeProfit1: Number(run.plan.prices.takeProfit1),
-      takeProfit2: Number(run.plan.prices.takeProfit2),
-    };
-    const split = splitFilledQuantity(filledQuantity, { ...numericPrices, rules: run.plan.rules });
-    run.protection.mode = split.mode;
+  async ensureProtection(run, filledQuantity, { stopOnly = false } = {}) {
+    this.acquireProcessLock();
     run.protection.phase = "INITIAL";
     try {
       await this.ensureAlgo(run, "stop", (clientAlgoId) => this.client.placeStopClose({
@@ -1118,6 +1239,28 @@ export class TestnetCanaryExecutor extends EventEmitter {
       });
       return await this.emergencyCloseUnprotectedRun(run, "STOP_PROTECTION_FAILED");
     }
+    if (stopOnly) {
+      run.status = "PARTIALLY_FILLED";
+      run.protection.phase = "ENTRY_REMAINDER_PENDING";
+      run.error = null;
+      return await this.persist(run, "ENTRY_POSITION_STOP_PROTECTED", { filledQuantity });
+    }
+    let split;
+    try {
+      split = splitFilledQuantity(filledQuantity, {
+        takeProfit1: Number(run.plan.prices.takeProfit1),
+        takeProfit2: Number(run.plan.prices.takeProfit2),
+        rules: run.plan.rules,
+      });
+    } catch (error) {
+      // A quantity that cannot form TP legs still has an effective full-position
+      // stop. Keep that protection while the entry facts/remainder settle.
+      run.status = "PROTECTION_INCOMPLETE";
+      run.protection.phase = "TP_QUANTITY_PENDING";
+      run.error = errorMessage(error);
+      return await this.persist(run, "TP_QUANTITY_PENDING", { filledQuantity, reason: run.error, stopActive: true });
+    }
+    run.protection.mode = split.mode;
     const failures = [];
     for (const key of split.mode === "TWO_TARGETS" ? ["takeProfit2", "takeProfit1"] : ["takeProfit2"]) {
       const closing = run.protection.takeProfit2;
@@ -1240,76 +1383,116 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async collectRunTrades(run) {
-    const rows = await this.client.listUserTrades(run.symbol, { startTime: Math.max(0, run.createdAt - 60_000) });
-    const entryOrderIds = new Set([run.entryOrder?.orderId].filter(Boolean).map(String));
-    const exitOrderIds = new Set([
-      run.operatorCloseOrder?.orderId,
-      ...Object.values(run.protection ?? {}).flatMap((order) => {
-        if (!order || typeof order !== "object") return [];
-        return [order.actualOrderId, order.orderId].filter(Boolean);
-      }),
-    ].filter(Boolean).map(String));
+    const entryOrderIds = new Set([run.entryOrder?.orderId].filter(validOrderId).map(String));
+    const exitOrders = [run.operatorCloseOrder, ...Object.values(run.protection ?? {})]
+      .filter(order => order && typeof order === "object");
+    // Algo IDs are not trade order IDs. Zero denotes a leg that never filled.
+    const exitOrderIds = new Set(exitOrders.flatMap(order => {
+      if (Object.hasOwn(order, "actualOrderId")) return validOrderId(order.actualOrderId) ? [String(order.actualOrderId)] : [];
+      return validOrderId(order.orderId) ? [String(order.orderId)] : [];
+    }));
     const ownedOrderIds = new Set([...entryOrderIds, ...exitOrderIds]);
-    const trades = rows.filter((trade) => ownedOrderIds.has(String(trade.orderId)));
-    let incomeRows = [];
-    let fundingComplete = true;
-    if (typeof this.client.listIncomeHistory === "function") {
-      try {
-        incomeRows = await this.client.listIncomeHistory(run.symbol, {
-          incomeType: "FUNDING_FEE",
-          startTime: Math.max(0, run.createdAt - 60_000),
-          endTime: this.now(),
-        });
-      } catch (error) {
-        fundingComplete = false;
-        await this.store.appendExecutionAudit(run.id, "FUNDING_ACCOUNTING_PENDING", { message: errorMessage(error) }, this.now());
+    const startTime = Math.max(0, Number(run.entryExecution?.submittedAt ?? run.createdAt) - 60_000);
+    const endTime = this.now();
+    const unique = new Map();
+    let tradesComplete = startTime >= endTime - 180 * 24 * 60 * 60_000;
+    const week = 7 * 24 * 60 * 60_000 - 1;
+    for (let sliceStart = startTime; sliceStart <= endTime; sliceStart += week + 1) {
+      const sliceEnd = Math.min(endTime, sliceStart + week);
+      let fromId = null;
+      for (let page = 0; page < 1000; page++) {
+        // Binance forbids combining fromId with either time bound.
+        const query = fromId === null ? { startTime: sliceStart, endTime: sliceEnd, limit: 1000 } : { fromId, limit: 1000 };
+        const rows = await this.client.listUserTrades(run.symbol, query);
+        if (!Array.isArray(rows)) { tradesComplete = false; break; }
+        for (const row of rows) {
+          if (!ownedOrderIds.has(String(row.orderId))) continue;
+          const time = finiteValue(row.time);
+          if (time !== null && (time < sliceStart || time > sliceEnd)) continue;
+          const key = row.id == null ? null : String(row.id);
+          if (!key) { tradesComplete = false; continue; }
+          if (unique.has(key) && JSON.stringify(unique.get(key)) !== JSON.stringify(row)) tradesComplete = false;
+          else unique.set(key, row);
+        }
+        if (rows.length < 1000 || rows.some(row => finiteValue(row.time) !== null && Number(row.time) > sliceEnd)) break;
+        const ids = rows.map(row => String(row.id ?? ""));
+        if (ids.some(id => !/^[0-9]+$/.test(id))) { tradesComplete = false; break; }
+        const next = (ids.reduce((max, id) => BigInt(id) > max ? BigInt(id) : max, -1n) + 1n).toString();
+        if (fromId !== null && BigInt(next) <= BigInt(fromId)) { tradesComplete = false; break; }
+        fromId = next;
+        if (page === 999) tradesComplete = false;
       }
     }
-    const fundingPnl = incomeRows.reduce((sum, item) => sum + (Number(item.income) || 0), 0);
-    const tradedOrderIds = new Set(trades.map((trade) => String(trade.orderId)));
-    return {
-      trades,
-      fundingIncome: incomeRows,
-      fundingPnl,
-      fundingComplete,
-      ownedOrderIds: [...ownedOrderIds],
-      accountingComplete: fundingComplete && entryOrderIds.size > 0
-        && exitOrderIds.size > 0
-        && [...entryOrderIds].every((orderId) => tradedOrderIds.has(orderId))
-        && [...exitOrderIds].every((orderId) => tradedOrderIds.has(orderId)),
-    };
+    const trades = [...unique.values()];
+    const fieldsComplete = trades.every(trade => trade.symbol === run.symbol
+      && trade.side === (entryOrderIds.has(String(trade.orderId)) ? run.plan.entrySide : run.plan.exitSide)
+      && finiteValue(trade.quantity) > 0 && finiteValue(trade.price) > 0
+      && validOrderId(trade.id) && finiteValue(trade.time) !== null
+      && Number(trade.time) >= Number(run.entryExecution?.submittedAt ?? run.createdAt) && Number(trade.time) <= endTime
+      && (finiteValue(trade.quoteQuantity) === null || quantitiesEqual(Number(trade.quoteQuantity), Number(trade.quantity) * Number(trade.price)))
+      && finiteValue(trade.commission) !== null
+      && trade.commissionAsset === "USDT" && finiteValue(trade.realizedPnl) !== null);
+    const quantities = ids => trades.filter(t => ids.has(String(t.orderId))).reduce((sum, t) => sum + (finiteValue(t.quantity) ?? 0), 0);
+    const entryQuantity = quantities(entryOrderIds), exitQuantity = quantities(exitOrderIds);
+    const expected = finiteValue(run.entryOrder?.executedQuantity);
+    const quantityComplete = expected > 0 && quantitiesEqual(entryQuantity, expected) && quantitiesEqual(exitQuantity, expected)
+      && [...ownedOrderIds].every(id => trades.some(t => String(t.orderId) === id))
+      && exitOrders.every(order => {
+        const id = Object.hasOwn(order, "actualOrderId") ? order.actualOrderId : order.orderId;
+        const expectedExit = positiveNumber(order.actualQuantity, order.executedQuantity);
+        return !validOrderId(id) || expectedExit === null || quantitiesEqual(quantities(new Set([String(id)])), expectedExit);
+      });
+    const entryAt = Math.min(...trades.filter(t => entryOrderIds.has(String(t.orderId))).map(t => finiteValue(t.time) ?? Infinity));
+    const exitAt = Math.max(...trades.filter(t => exitOrderIds.has(String(t.orderId))).map(t => finiteValue(t.time) ?? -Infinity));
+    let fundingComplete = typeof this.client.listIncomeHistory === "function" && Number.isFinite(entryAt) && Number.isFinite(exitAt) && exitAt >= entryAt
+      && entryAt >= endTime - 90 * 24 * 60 * 60_000;
+    const income = new Map();
+    if (fundingComplete) {
+      try {
+        for (let page = 1; page <= 1000; page++) {
+          const rows = await this.client.listIncomeHistory(run.symbol, { incomeType: "FUNDING_FEE", startTime: entryAt, endTime: exitAt, limit: 1000, page });
+          if (!Array.isArray(rows)) { fundingComplete = false; break; }
+          let added = 0;
+          for (const item of rows) {
+            if (item.symbol !== run.symbol || item.incomeType !== "FUNDING_FEE" || item.asset !== "USDT"
+              || finiteValue(item.income) === null || finiteValue(item.time) === null || (item.transactionId ?? item.tranId) == null) { fundingComplete = false; continue; }
+            if (item.time < entryAt || item.time > exitAt) continue;
+            const key = String(item.transactionId ?? item.tranId);
+            if (income.has(key) && JSON.stringify(income.get(key)) !== JSON.stringify(item)) fundingComplete = false;
+            if (!income.has(key)) { income.set(key, item); added++; }
+          }
+          if (rows.length < 1000) break;
+          if (!added || page === 1000) { fundingComplete = false; break; }
+        }
+      } catch {
+        fundingComplete = false;
+        await this.store.appendExecutionAudit(run.id, "FUNDING_ACCOUNTING_PENDING", { reason: "FUNDING_QUERY_FAILED" }, this.now());
+      }
+    }
+    const fundingIncome = [...income.values()];
+    return { trades, fundingIncome, fundingPnl: fundingComplete ? fundingIncome.reduce((sum, item) => sum + Number(item.income), 0) : null,
+      fundingComplete, tradesComplete, ownedOrderIds: [...ownedOrderIds],
+      accountingComplete: tradesComplete && fieldsComplete && fundingComplete && quantityComplete && entryOrderIds.size > 0 && exitOrderIds.size > 0 };
   }
 
-  buildRunResult({ trades, fundingIncome = [], fundingPnl = 0, ownedOrderIds = [], accountingComplete = false }, run) {
-    const commission = trades.reduce((sum, item) => sum + (item.commission ?? 0), 0);
-    const realizedPnl = trades.reduce((sum, item) => sum + (item.realizedPnl ?? 0), 0);
-    const entryOrderIds = new Set([run.entryOrder?.orderId].filter(Boolean).map(String));
-    const exitOrderIds = new Set(trades
-      .filter((trade) => !entryOrderIds.has(String(trade.orderId)))
-      .map((trade) => String(trade.orderId)));
-    const roleOrderIds = {
-      stop: run.protection?.stop?.actualOrderId ?? run.protection?.stop?.orderId,
-      breakEvenStop: run.protection?.breakEvenStop?.actualOrderId ?? run.protection?.breakEvenStop?.orderId,
-      takeProfit1: run.protection?.takeProfit1?.actualOrderId ?? run.protection?.takeProfit1?.orderId,
-      takeProfit2: run.protection?.takeProfit2?.actualOrderId ?? run.protection?.takeProfit2?.orderId,
-      operatorClose: run.operatorCloseOrder?.orderId,
-    };
-    const exitRole = ["operatorClose", "breakEvenStop", "stop", "takeProfit2", "takeProfit1"]
-      .find((role) => roleOrderIds[role] && exitOrderIds.has(String(roleOrderIds[role]))) ?? null;
-    return {
-      reason: "EXCHANGE_POSITION_CLOSED",
-      exitRole,
-      exitReason: reasonForExitRole(run.plan.orderReasons, exitRole)
-        ?? "交易所确认系统仓位已经关闭，因此结束本次Binance Demo交易。",
-      commission,
-      realizedPnl,
-      fundingPnl,
-      fundingIncome,
+  buildRunResult({ trades, fundingIncome = [], fundingPnl = null, ownedOrderIds = [], accountingComplete = false }, run) {
+    const commission = trades.length > 0 && trades.every(t => finiteValue(t.commission) !== null && t.commissionAsset === "USDT")
+      ? trades.reduce((sum, t) => sum + Number(t.commission), 0) : null;
+    const realizedPnl = trades.length > 0 && trades.every(t => finiteValue(t.realizedPnl) !== null)
+      ? trades.reduce((sum, t) => sum + Number(t.realizedPnl), 0) : null;
+    accountingComplete = accountingComplete && commission !== null && realizedPnl !== null && finiteValue(fundingPnl) !== null;
+    const entryOrderIds = new Set([run.entryOrder?.orderId].filter(validOrderId).map(String));
+    const exitOrderIds = new Set(trades.filter(t => !entryOrderIds.has(String(t.orderId))).map(t => String(t.orderId)));
+    const exitRole = ["operatorClose", "breakEvenStop", "stop", "takeProfit2", "takeProfit1"].find(role => {
+      const order = role === "operatorClose" ? run.operatorCloseOrder : run.protection?.[role];
+      const id = Object.hasOwn(order ?? {}, "actualOrderId") ? order.actualOrderId : order?.orderId;
+      return validOrderId(id) && exitOrderIds.has(String(id));
+    }) ?? null;
+    return { reason: "EXCHANGE_POSITION_CLOSED", exitRole,
+      exitReason: reasonForExitRole(run.plan.orderReasons, exitRole) ?? "交易所确认系统仓位已经关闭，因此结束本次Binance Demo交易。",
+      commission, realizedPnl, fundingPnl, fundingIncome,
       netPnl: accountingComplete ? realizedPnl - commission + fundingPnl : null,
-      trades,
-      ownedOrderIds,
-      accountingComplete,
-    };
+      netR: null, trades, ownedOrderIds, accountingComplete };
   }
 
   runResiduals(account, run) {
@@ -1344,6 +1527,11 @@ export class TestnetCanaryExecutor extends EventEmitter {
     run.exchange = account;
     run.protection = { ...run.protection, ...protection };
     const position = account.positions.find((item) => item.symbol === symbol);
+    // Legacy unsettled rows require a separately authorized migration. Preserve their
+    // stored state; active positions still follow the existing protection path below.
+    if (!position && run.status === "ACCOUNTING_PENDING" && !run.entryFactVerification) return run;
+    const entryFacts = await this.verifyEntryFacts(run, account);
+    if (entryFacts.pending) return run;
     if (!position) {
       for (const [role, order] of Object.entries(run.protection)) await this.cancelAlgoIfActive(run, role, order);
       const finalAccount = await this.client.fetchAccountState(symbol);
@@ -1546,12 +1734,14 @@ export class TestnetCanaryExecutor extends EventEmitter {
       });
       return await this.emergencyCloseUnprotectedRun(run, "ACTIVE_STOP_MISSING");
     }
+    await this.observeEntryFillVerification(run);
     run.status = tp2RecoveryIncomplete ? "PROTECTION_INCOMPLETE" : tp1Filled ? "TP1_FILLED" : "OPEN_PROTECTED";
     run.error = tp2RecoveryIncomplete ? `takeProfit2: ${run.protection.tpRecovery.takeProfit2.reason}` : null;
     return await this.persist(run, "POSITION_RECONCILED", { quantity: position.quantity, status: run.status });
   }
 
   async closeExecutionRun(runId, reason = null) {
+    this.acquireProcessLock();
     if (!this.enabled) throw new TestnetWriteDisabledError("closeExecutionRun");
     const run = await this.store.getExecutionRun(runId);
     if (!run) throw new Error(`找不到执行记录 ${runId}`);
@@ -1645,6 +1835,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async refreshClosedRunAccounting(runId) {
+    this.acquireProcessLock();
     const run = await this.store.getExecutionRun(runId);
     if (!run) throw new Error(`找不到执行记录 ${runId}`);
     if (run.status !== "CLOSED") throw new Error(`执行记录状态 ${run.status} 尚未关闭`);
@@ -1668,6 +1859,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async engageEmergencyStop(reason = "MANUAL", runId = null) {
+    this.acquireProcessLock();
     const value = { active: true, reason, runId, at: this.now() };
     await this.store.setMetadata("testnet_execution_emergency_stop", value);
     if (runId) await this.store.appendExecutionAudit(runId, "EMERGENCY_STOP_ENGAGED", value, value.at);
@@ -1696,6 +1888,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async clearEmergencyStop() {
+    this.acquireProcessLock();
     const [account, activeRuns] = await Promise.all([
       this.client.fetchAccountState(this.operatorSymbol),
       this.store.listActiveExecutionRuns(),
@@ -1703,6 +1896,8 @@ export class TestnetCanaryExecutor extends EventEmitter {
     const classification = classifyExecutionAccountState(account, activeRuns);
     const unsafeRuns = activeRuns.filter((run) => [
       "ENTRY_SUBMITTING",
+      "ENTRY_FACT_PENDING",
+      "ENTRY_FACT_CONFLICT",
       "SUBMISSION_UNKNOWN",
       "ENTRY_PENDING",
       "PARTIALLY_FILLED",
@@ -1749,6 +1944,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async start() {
+    this.acquireProcessLock();
     const active = await this.store.listActiveExecutionRuns();
     const unmanaged = active.filter((run) => run.status !== "PREPARED");
     if (!this.enabled && unmanaged.length) {
@@ -1763,6 +1959,10 @@ export class TestnetCanaryExecutor extends EventEmitter {
   stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    if (!this.executing.size && !this.reconciling.size && this.releaseProcessLock) {
+      this.releaseProcessLock();
+      this.releaseProcessLock = null;
+    }
   }
 
   async snapshot() {

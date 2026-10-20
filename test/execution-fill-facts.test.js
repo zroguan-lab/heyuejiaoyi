@@ -10,7 +10,7 @@ function fixture(direction = "LONG") {
       riskAmountEstimate: 999, prices: { entry: 100, stopLoss: direction === "LONG" ? 90 : 110 } },
     entryOrder: { orderId: "entry", executedQuantity: 2, price: 100, averagePrice: 0 },
     executionMetrics: { actualRiskAmount: 999 },
-    result: { netPnl: 6, trades: [
+    result: { accountingComplete: true, netPnl: 6, trades: [
       { id: "a", orderId: "entry", side, price: 101, quantity: 1 },
       { id: "b", orderId: "entry", side, price: 103, quantity: 1 },
       { id: "external", orderId: "external", side, price: 500, quantity: 100 },

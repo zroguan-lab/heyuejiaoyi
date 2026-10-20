@@ -3,6 +3,7 @@ const ACTIVE_ALGO_STATUSES = new Set(["NEW", "PENDING", "TRIGGERING"]);
 const ENTRY_MAY_EXIST_STATUSES = new Set([
   "ENTRY_SUBMITTING",
   "SUBMISSION_UNKNOWN",
+  "ENTRY_FACT_CONFLICT",
   "ENTRY_PENDING",
   "PARTIALLY_FILLED",
   "PROTECTION_PENDING",
@@ -204,7 +205,8 @@ export function assertAccountReadyForNewEntry(account, activeRuns, { candidateSy
     throw new Error("账户事实源不是 Binance Testnet");
   }
   if (account.positionMode !== "ONE_WAY") throw new Error("测试网账户不是单向持仓");
-  const uncertainSubmission = activeRuns.find((run) => run.id !== candidateRunId && run.status === "SUBMISSION_UNKNOWN");
+  const uncertainSubmission = activeRuns.find((run) => run.id !== candidateRunId
+    && ["SUBMISSION_UNKNOWN", "ENTRY_FACT_CONFLICT"].includes(run.status));
   if (uncertainSubmission) throw new Error(`执行记录 ${uncertainSubmission.id} 的入场提交结果未知，禁止准备新订单`);
   const sameSymbol = activeRuns.find((run) => run.id !== candidateRunId
     && !TERMINAL_STATUSES.has(run.status)

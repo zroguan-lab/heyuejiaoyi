@@ -58,8 +58,12 @@ export function projectExecutionRun(run, signalRecord = null) {
   const realizedPnl = finiteNumber(run.result?.realizedPnl);
   const commission = finiteNumber(run.result?.commission);
   const fundingPnl = finiteNumber(run.result?.fundingPnl);
-  const netPnl = finiteNumber(run.result?.netPnl)
-    ?? (realizedPnl !== null && commission !== null && fundingPnl !== null ? realizedPnl - commission + fundingPnl : null);
+  const entryConflict = run.status === "ENTRY_FACT_CONFLICT";
+  const accountingComplete = !entryConflict && run.result?.accountingComplete === true;
+  const netPnl = accountingComplete
+    ? finiteNumber(run.result?.netPnl)
+      ?? (realizedPnl !== null && commission !== null && fundingPnl !== null ? realizedPnl - commission + fundingPnl : null)
+    : null;
   const plannedEntryPrice = finiteNumber(run.plan.prices?.entry);
   const plannedRisk = finiteNumber(run.plan.riskAmountEstimate);
   const stopLoss = finiteNumber(run.plan.prices?.stopLoss);
@@ -81,7 +85,7 @@ export function projectExecutionRun(run, signalRecord = null) {
     sourceType,
     executionSource: run.executionSource ?? run.plan.executionSource ?? V1_EXECUTION_SOURCE,
     signalDriven,
-    performanceEligible: run.performanceEligible ?? signalDriven,
+    performanceEligible: entryConflict ? false : run.performanceEligible ?? signalDriven,
     strategy: run.plan.strategy ?? strategy,
     strategyVersion: run.plan.strategyVersion ?? candidate?.strategyVersion ?? null,
     signalModelVersion: run.plan.signalModelVersion ?? candidate?.signalModelVersion ?? null,
@@ -144,6 +148,8 @@ export function projectExecutionRun(run, signalRecord = null) {
     entryFactStatus: facts.status,
     entryFactSource: facts.source,
     entryFactReason: facts.reason,
+    entryVerificationStatus: run.entryFactVerification?.status ?? null,
+    entryFillsStatus: run.entryFactVerification?.fills?.status ?? null,
     excursionSource: excursion.source,
     excursionCoverage: excursion.coverage,
     excursionReason: excursion.reason,
@@ -189,7 +195,7 @@ export function projectExecutionRun(run, signalRecord = null) {
     resultReason: run.result?.reason ?? null,
     exitReason: run.result?.exitReason ?? null,
     exitRole: run.result?.exitRole ?? null,
-    accountingComplete: run.result?.accountingComplete ?? null,
+    accountingComplete,
     exitOrderIds: [...new Set([
       run.operatorCloseOrder?.orderId,
       ...Object.values(run.protection ?? {}).flatMap((order) => order && typeof order === "object" ? [order.actualOrderId, order.orderId] : []),

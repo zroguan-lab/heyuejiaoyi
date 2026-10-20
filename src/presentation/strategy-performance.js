@@ -52,6 +52,7 @@ const SEGMENT_DEFINITIONS = [
 const OPEN_SAMPLE_STATUSES = new Set([
   "ENTRY_SUBMITTING",
   "ENTRY_PENDING",
+  "ENTRY_FACT_PENDING",
   "PARTIALLY_FILLED",
   "PROTECTION_PENDING",
   "PROTECTION_INCOMPLETE",
@@ -75,12 +76,15 @@ export function buildExecutionSummary(trades = []) {
     excluded: 0,
     failed: 0,
     submissionUnknown: 0,
+    entryFactConflict: 0,
     preEntry: 0,
     excludedNetPnl: 0,
   };
   for (const trade of trades.filter((item) => item?.sourceType === "SIGNAL")) {
     summary.total += 1;
-    if (trade.status === "SUBMISSION_UNKNOWN" || trade.status === "OPERATOR_CLOSE_UNKNOWN") {
+    if (trade.status === "ENTRY_FACT_CONFLICT") {
+      summary.entryFactConflict += 1;
+    } else if (trade.status === "SUBMISSION_UNKNOWN" || trade.status === "OPERATOR_CLOSE_UNKNOWN") {
       summary.submissionUnknown += 1;
     } else if (trade.status === "CANCELED") {
       summary.canceledUnfilled += 1;
