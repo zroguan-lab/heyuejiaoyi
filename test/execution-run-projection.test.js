@@ -2,6 +2,29 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { projectExecutionRun, projectExecutionRuns } from "../src/execution/execution-run-projection.js";
 
+test("TEAM-011 incomplete accounting cannot reconstruct confirmed PnL or R from components", () => {
+  for (const accountingComplete of [undefined, null, false]) {
+    const row = projectExecutionRun({ id: "unknown", symbol: "BTCUSDT", status: "ACCOUNTING_PENDING",
+      plan: { direction: "LONG", entrySide: "BUY", prices: { stopLoss: 90 } },
+      entryOrder: { orderId: "1", symbol: "BTCUSDT", side: "BUY", executedQuantity: 1, cumulativeQuote: 100 },
+      result: { accountingComplete, realizedPnl: 10, commission: 1, fundingPnl: 0, netPnl: 9 } });
+    assert.equal(row.netPnl, null);
+    assert.equal(row.netR, null);
+    assert.equal(row.accountingComplete, false);
+  }
+});
+
+test("TEAM-011 conflict overrides stale accounting and ACK aggregates", () => {
+  const row = projectExecutionRun({ id: "conflict", symbol: "BTCUSDT", sourceType: "SIGNAL", status: "ENTRY_FACT_CONFLICT",
+    performanceEligible: true, plan: { direction: "LONG", entrySide: "BUY", prices: { stopLoss: 90 } },
+    entryOrder: { orderId: "1", symbol: "BTCUSDT", side: "BUY", executedQuantity: 1, cumulativeQuote: 100 },
+    result: { accountingComplete: true, netPnl: 9 } });
+  assert.equal(row.performanceEligible, false);
+  assert.equal(row.netPnl, null);
+  assert.equal(row.netR, null);
+  assert.equal(row.actualRisk, null);
+});
+
 test("真实策略执行记录投影 Binance 成交、金额与净盈亏", () => {
   const run = {
     id: "canary-signal-1",
@@ -50,6 +73,7 @@ test("真实策略执行记录投影 Binance 成交、金额与净盈亏", () =>
       barsHeld5m: 1, minutesHeld: 0.0167,
     },
     result: {
+      accountingComplete: true,
       commission: 0.08,
       realizedPnl: 0.12,
       fundingPnl: -0.01,

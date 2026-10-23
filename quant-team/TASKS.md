@@ -1,4 +1,16 @@
 # 团队任务
+## TEAM-012 Demo账户重置恢复与新绩效纪元
+状态：COMPLETE / DEPLOYED / FORWARD_COLLECTION_ACTIVE。2026-10-24用户要求尽快修复并开启新纪元。
+结果：新鲜签名账户事实确认ONE_WAY、0持仓/0普通单/0条件单；无撮合权限探针通过。一致性备份、原子迁移、旧6条未知账务审计终态化、新V2.4.3纪元、单实例启动和在线健康验收均完成。
+冻结：Score、准入、方向、止盈止损、仓位、杠杆、成本和策略版本未改；没有人工订单动作或强扫。最终370/370通过。部署提交`2dde4f435272503f397aa77d8d4cf7b99210c840`。
+合同：tasks/TEAM-012.md；验收：acceptance/2026-10-24-TEAM-012-deployment.md。该完成状态仅代表运行与审计恢复，不代表盈利已验证。
+
+## TEAM-011 / GitHub Issue #1 执行事实与账务修复
+状态：OFFLINE_VERIFIED / NOT_DEPLOYED。2026-10-20用户授权代码修改、相关测试、独立QA和PR；禁止部署及账户操作。
+实现：ACK多源核验、ENTRY_FACT_CONFLICT隔离、保护优先/余单恢复、严格分页费用/Funding账务、未知盈亏投影、单实例锁。策略、止盈止损参数、保证金、杠杆冻结。
+验收：总控全量365/365，独立QA相关144/144，语法与diff检查PASS；旧反例失败及QA阻断修复如实记录。四笔历史未改写、未释放门控，未访问账户/活动库/凭据/封存、未启停服务。
+合同：tasks/TEAM-011-development.md；交付：acceptance/2026-10-20-TEAM-011-development.md。PR不等于部署；上线与历史迁移另行授权。
+
 ## TEAM-009 不可变SHADOW研究计划观测补齐
 状态：OFFLINE_VERIFIED / NOT_DEPLOYED。用户2026-10-19批准只补充研究快照证据，不改变交易判断或订单行为。
 范围：为新决策快照增加版本化researchPlan，记录entry/SL/TP/订单TTL/固定风险输入并保持旧V1验证兼容；只改decision snapshot及对应隔离测试。

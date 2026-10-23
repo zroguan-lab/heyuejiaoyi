@@ -224,7 +224,7 @@ test("其他标的已有受保护仓位时仍可执行新的不同标的信号",
 test("存在提交结果未知或无保护异常时协调器全局暂停新入场", async () => {
   const now = 3_700_000;
   const next = signal("eth-next", now, { symbol: "ETHUSDT", score: 80 });
-  for (const status of ["SUBMISSION_UNKNOWN", "PROTECTION_INCOMPLETE", "ERROR_UNPROTECTED"]) {
+  for (const status of ["SUBMISSION_UNKNOWN", "ENTRY_FACT_CONFLICT", "PROTECTION_INCOMPLETE", "ERROR_UNPROTECTED"]) {
     const monitor = new EventEmitter();
     const store = new MemoryStore([next], [{ id: `run-${status}`, signalId: "old", symbol: "BTCUSDT", status }]);
     const executor = new FakeExecutor(store);

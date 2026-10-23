@@ -6,7 +6,7 @@ const close = (a, b) => Math.abs(a - b) <= Math.max(1e-10, Math.abs(b) * 1e-6);
 export function ownedExitFills(run, result = run.result) {
   const ids = new Set([run.operatorCloseOrder?.orderId,
     ...Object.values(run.protection ?? {}).flatMap(o => o && typeof o === "object" ? [o.actualOrderId, o.orderId] : [])
-  ].filter(v => v !== null && v !== undefined).map(String));
+  ].filter(v => v !== null && v !== undefined && v !== "" && String(v) !== "0").map(String));
   const seen = new Set();
   return (result?.trades ?? []).filter(t => {
     if (!ids.has(String(t.orderId)) || t.side !== run.plan?.exitSide || (t.symbol && t.symbol !== run.symbol)) return false;
@@ -47,6 +47,12 @@ export function observeOwnedExitFills(performance, run, result = run.result) {
 export function executionFillFacts(run) {
   const order = run.entryOrder ?? {};
   const unknown = (reason) => ({ entryPrice: null, quantity: null, riskAmount: null, notional: null, source: null, status: "UNKNOWN", reason });
+  if (run.status === "ENTRY_FACT_CONFLICT") return unknown("ENTRY_FACT_CONFLICT");
+  if (run.entryFactVerification?.fills?.status === "CONFLICT") return unknown("ENTRY_FILL_IDENTITY_CONFLICT");
+  if (run.entryFactVerification
+    && !["ORDER_VERIFIED", "FILLS_VERIFIED"].includes(run.entryFactVerification.status)) {
+    return unknown("ENTRY_ACK_NOT_VERIFIED");
+  }
   if (!order.orderId) return unknown("ENTRY_ORDER_ID_MISSING");
   const fills = (run.result?.trades ?? []).filter((t) => String(t.orderId) === String(order.orderId));
   const expected = positive(order.executedQuantity);
@@ -67,6 +73,9 @@ export function executionFillFacts(run) {
     if (!expected || !close(quantity, expected)) return unknown("ENTRY_FILL_QUANTITY_INCOMPLETE_OR_CONFLICT");
     source = "ENTRY_ORDER_MATCHED_FILLS";
   } else {
+    if (run.entryFactVerification && run.entryFactVerification.status !== "ORDER_VERIFIED") {
+      return unknown("ENTRY_ACK_NOT_VERIFIED");
+    }
     // Normalized exchange order aggregate must identify the order, side and symbol.
     if (!expected || order.symbol !== run.symbol || order.side !== run.plan?.entrySide) return unknown("VERIFIED_ENTRY_AGGREGATE_MISSING");
     const average = positive(order.averagePrice), cumulative = positive(order.cumulativeQuote);
@@ -96,8 +105,9 @@ export function executionExcursionFacts(run, facts = executionFillFacts(run)) {
   if (!recoverable || !favorable || !adverse || high < low || !(number(p.samples) > 0)) return empty("OBSERVED_PRICE_EXTREMA_MISSING");
   const sign = run.plan.direction === "SHORT" ? -1 : 1;
   const mfePnl = Math.max(0, sign * (favorable - facts.entryPrice) * facts.quantity);
-  const maePnl = Math.min(0, sign * (adverse - facts.entryPrice) * facts.quantity);
-  return { mfePnl, maePnl, mfeR: mfePnl / facts.riskAmount, maeR: -maePnl / facts.riskAmount,
+  const rawMaePnl = Math.min(0, sign * (adverse - facts.entryPrice) * facts.quantity);
+  const maePnl = rawMaePnl === 0 ? 0 : rawMaePnl;
+  return { mfePnl, maePnl, mfeR: mfePnl / facts.riskAmount, maeR: maePnl === 0 ? 0 : -maePnl / facts.riskAmount,
     mfePrice: favorable, maePrice: adverse, source: p.observationSource,
     coverage: p.observationCoverage ?? "POLL_SAMPLED_PARTIAL", reason: "SAMPLED_NOT_FULL_MARKET_PATH" };
 }

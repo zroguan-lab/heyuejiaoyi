@@ -2,6 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { buildExecutionSummary, buildStrategyPerformance } from "../src/presentation/strategy-performance.js";
 
+test("TEAM-011 conflict is separately visible and never finalized", () => {
+  const rows = [{ sourceType: "SIGNAL", status: "ENTRY_FACT_CONFLICT", performanceEligible: false, netPnl: null, netR: null }];
+  const summary = buildExecutionSummary(rows);
+  assert.equal(summary.entryFactConflict, 1);
+  assert.equal(summary.finalized, 0);
+  assert.equal(summary.accountingPending, 0);
+  assert.equal(buildStrategyPerformance(rows).finalizedTradeCount, 0);
+});
+
 test("100笔只有1笔有效R不构成完整R证据，PnL仍独立结算", () => {
   const rows = Array.from({ length: 100 }, (_, index) => ({
     sourceType: "SIGNAL", status: "CLOSED", accountingComplete: true,
@@ -115,6 +124,7 @@ test("执行摘要区分在途样本、未成交取消、排除、失败和未�
     excluded: 1,
     failed: 1,
     submissionUnknown: 1,
+    entryFactConflict: 0,
     preEntry: 1,
     excludedNetPnl: -0.02,
   });

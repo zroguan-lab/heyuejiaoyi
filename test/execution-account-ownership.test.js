@@ -38,6 +38,11 @@ function account(overrides = {}) {
   };
 }
 
+test("TEAM-011 unresolved entry conflict blocks new entries across symbols", () => {
+  const conflict = run("conflict", "BTCUSDT", "LONG", "ENTRY_FACT_CONFLICT");
+  assert.throws(() => assertAccountReadyForNewEntry(account(), [conflict], { candidateSymbol: "ETHUSDT" }), /未知/);
+});
+
 function stopFor(runValue) {
   return {
     symbol: runValue.symbol,
