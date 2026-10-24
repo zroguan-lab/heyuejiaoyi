@@ -251,6 +251,81 @@ test("交易客户端使用新 Algo 接口创建只能平仓的止损与止盈",
   assert.equal(bodies[2].get("algoType"), "CONDITIONAL");
 });
 
+test("TEAM014错误账户数组及非法数量不得归一化为伪零仓",async()=>{
+  for(const invalid of [{},null,[{symbol:"BTCUSDT",positionSide:"BOTH"}],[{symbol:"BTCUSDT",positionSide:"BOTH",positionAmt:"NaN"}]]){
+    const responses={"/fapi/v3/account":{canTrade:true,availableBalance:"100"},"/fapi/v3/positionRisk":invalid,
+      "/fapi/v1/openOrders":[],"/fapi/v1/openAlgoOrders":[],"/fapi/v1/positionSide/dual":{dualSidePosition:false}};
+    const client=new BinanceTestnetTradingClient({baseUrl:"https://demo-fapi.binance.com",apiKey:"fixture",apiSecret:"fixture",now:()=>10000,
+      fetchImpl:async url=>new Response(JSON.stringify(new URL(url).pathname==='/fapi/v1/time'?{serverTime:10000}:responses[new URL(url).pathname]))});
+    await assert.rejects(()=>client.fetchAccountOverview(),/无效|格式|缺少/);
+  }
+});
+
+test("TEAM014账户兼容诊断只输出字段类型和校验布尔，不输出账户值",async()=>{
+  const responses={"/fapi/v3/account":{canTrade:"false",availableBalance:"123456.789",privateFixture:"DO_NOT_PRINT_ACCOUNT_PAYLOAD"},
+    "/fapi/v3/positionRisk":[],"/fapi/v1/openOrders":[],"/fapi/v1/openAlgoOrders":[],"/fapi/v1/positionSide/dual":{dualSidePosition:false}};
+  const client=new BinanceTestnetTradingClient({baseUrl:"https://demo-fapi.binance.com",apiKey:"fixture",apiSecret:"fixture",now:()=>10000,
+    fetchImpl:async url=>new Response(JSON.stringify(new URL(url).pathname==='/fapi/v1/time'?{serverTime:10000}:responses[new URL(url).pathname]))});
+  await assert.rejects(()=>client.fetchAccountOverview(),error=>{
+    const details=JSON.parse(error.message.slice(error.message.indexOf('{')));
+    assert.equal(details.accountObjectValid,true);
+    assert.equal(details.modeObjectValid,true);
+    assert.deepEqual(details.fields,[{field:"canTrade",type:"string",missing:false,valid:false},
+      {field:"availableBalance",type:"string",missing:false,valid:true},
+      {field:"dualSidePosition",type:"boolean",missing:false,valid:true}]);
+    assert.equal(error.message.includes("123456.789"),false);
+    assert.equal(error.message.includes("DO_NOT_PRINT_ACCOUNT_PAYLOAD"),false);
+    return true;
+  });
+});
+
+test("TEAM014合法V3缺失或null canTrade视为权限未知，非boolean不可真值放行",async()=>{
+  for(const value of [undefined,null,false,true,"false","true",0,1,{},[]]){
+    const account={availableBalance:"100"};if(value!==undefined)account.canTrade=value;
+    const responses={"/fapi/v3/account":account,"/fapi/v3/positionRisk":[],"/fapi/v1/openOrders":[],
+      "/fapi/v1/openAlgoOrders":[],"/fapi/v1/positionSide/dual":{dualSidePosition:false}};
+    const client=new BinanceTestnetTradingClient({baseUrl:"https://demo-fapi.binance.com",apiKey:"fixture",apiSecret:"fixture",now:()=>10000,
+      fetchImpl:async url=>new Response(JSON.stringify(new URL(url).pathname==='/fapi/v1/time'?{serverTime:10000}:responses[new URL(url).pathname]))});
+    if(value==null||typeof value==='boolean')assert.equal((await client.fetchAccountOverview()).canTrade,value===true);
+    else await assert.rejects(()=>client.fetchAccountOverview(),/canTrade/);
+  }
+});
+
+test("TEAM014账户响应缺项/非法数字失败关闭，合法空数组与非零仓均保留",async()=>{
+  const base={"/fapi/v3/account":{canTrade:true,availableBalance:"100"},"/fapi/v3/positionRisk":[],
+    "/fapi/v1/openOrders":[],"/fapi/v1/openAlgoOrders":[],"/fapi/v1/positionSide/dual":{dualSidePosition:false},
+    "/fapi/v1/symbolConfig":[{symbol:"BTCUSDT",marginType:"ISOLATED",leverage:10}]};
+  const order={symbol:"BTCUSDT",orderId:42,clientOrderId:"fixture-order",side:"BUY",status:"NEW",origQty:"1",executedQty:"0"};
+  const algo={symbol:"BTCUSDT",algoId:43,clientAlgoId:"fixture-stop",side:"SELL",status:"NEW",triggerPrice:"80000",quantity:"1",actualQty:"0"};
+  const cases=[
+    ["/fapi/v1/openOrders",{}],["/fapi/v1/openOrders",null],["/fapi/v1/openAlgoOrders",{}],["/fapi/v1/openAlgoOrders",null],
+    ["/fapi/v1/positionSide/dual",{}],["/fapi/v3/account",null],["/fapi/v3/account",{canTrade:true,availableBalance:"NaN"}],
+    ["/fapi/v3/positionRisk",[{symbol:"BTCUSDT",positionSide:"BOTH",positionAmt:null}]],
+    ["/fapi/v3/positionRisk",[{symbol:"BTCUSDT",positionSide:"BOTH",positionAmt:""}]],
+    ["/fapi/v3/positionRisk",[{symbol:"BTCUSDT",positionSide:"BOTH",positionAmt:true}]],
+    ["/fapi/v3/positionRisk",[{symbol:"BTCUSDT",positionSide:"BOTH",positionAmt:"Infinity"}]],
+    ["/fapi/v3/positionRisk",[{positionSide:"BOTH",positionAmt:"1"}]],
+    ["/fapi/v1/openOrders",[{...order,origQty:"NaN"}]],["/fapi/v1/openOrders",[{...order,executedQty:null}]],
+    ["/fapi/v1/openOrders",[{...order,executedQty:"2"}]],["/fapi/v1/openOrders",[{}]],
+    ["/fapi/v1/openAlgoOrders",[{...algo,quantity:"NaN"}]],["/fapi/v1/openAlgoOrders",[{...algo,quantity:null}]],
+    ["/fapi/v1/openAlgoOrders",[{...algo,actualQty:"NaN"}]],["/fapi/v1/openAlgoOrders",[{}]],
+    ["/fapi/v1/symbolConfig",{}],["/fapi/v1/symbolConfig",null],["/fapi/v1/symbolConfig",[{symbol:"BTCUSDT",marginType:"ISOLATED",leverage:"NaN"}]],
+    ["/fapi/v1/symbolConfig",[{symbol:"BTCUSDT",marginType:"CROSSED",leverage:-1}]],
+    ["/fapi/v1/symbolConfig",[{symbol:"BTCUSDT",marginType:"CROSSED"}]],
+  ];
+  function clientFor(responses){return new BinanceTestnetTradingClient({baseUrl:"https://demo-fapi.binance.com",apiKey:"fixture",apiSecret:"fixture",now:()=>10000,
+    fetchImpl:async(url,options)=>{assert.equal(options.method,"GET");const path=new URL(url).pathname;return new Response(JSON.stringify(path==='/fapi/v1/time'?{serverTime:10000}:responses[path]));}});}
+  for(const [path,payload]of cases){const responses={...structuredClone(base),[path]:payload};await assert.rejects(()=>clientFor(responses).fetchAccountState("BTCUSDT"),/无效/,path);}
+  const empty=await clientFor(base).fetchAccountState("BTCUSDT");
+  assert.deepEqual(empty.positions,[]);assert.deepEqual(empty.openOrders,[]);assert.deepEqual(empty.openAlgoOrders,[]);
+  const real=await clientFor({...base,"/fapi/v3/positionRisk":[{symbol:"BTCUSDT",positionSide:"BOTH",positionAmt:"-1"}],
+    "/fapi/v1/openOrders":[order],"/fapi/v1/openAlgoOrders":[{...algo,quantity:"0",closePosition:true}]}).fetchAccountState("BTCUSDT");
+  assert.equal(real.positions[0].quantity,-1);assert.equal(real.openOrders.length,1);assert.equal(real.openAlgoOrders[0].closePosition,true);
+  const unconfigured=await clientFor({...base,"/fapi/v1/symbolConfig":[{symbol:"BTCUSDT",marginType:"CROSSED",leverage:0}]}).fetchAccountState("BTCUSDT");
+  assert.equal(unconfigured.symbolConfig.leverage,0);
+  assert.equal(unconfigured.symbolConfig.marginType,"CROSSED");
+});
+
 test("并发账户查询只进行一次服务器时间同步", async () => {
   let timeRequests = 0;
   const signedUrls = [];

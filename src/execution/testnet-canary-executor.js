@@ -1472,6 +1472,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
     const fundingIncome = [...income.values()];
     return { trades, fundingIncome, fundingPnl: fundingComplete ? fundingIncome.reduce((sum, item) => sum + Number(item.income), 0) : null,
       fundingComplete, tradesComplete, ownedOrderIds: [...ownedOrderIds],
+      exitFactsComplete: tradesComplete && fieldsComplete && quantityComplete && entryOrderIds.size > 0 && exitOrderIds.size > 0,
       accountingComplete: tradesComplete && fieldsComplete && fundingComplete && quantityComplete && entryOrderIds.size > 0 && exitOrderIds.size > 0 };
   }
 
@@ -1514,6 +1515,26 @@ export class TestnetCanaryExecutor extends EventEmitter {
     };
   }
 
+  async holdProtectionCleanup(run, reason) {
+    const changed = run.protection.cleanupVerification?.reason !== reason || run.status !== "PROTECTION_INCOMPLETE";
+    run.protection.cleanupVerification = { status: "PENDING", reason, checkedAt: this.now() };
+    run.status = "PROTECTION_INCOMPLETE";
+    run.error = `保护清理等待独立退出确认: ${reason}`;
+    if (changed) return await this.persist(run, "PROTECTION_CLEANUP_BLOCKED", { reason });
+    await this.store.saveExecutionRun(run);
+    return run;
+  }
+
+  cleanupAccountValid(account) {
+    return account?.environment === "TESTNET" && account.authority === "BINANCE_TESTNET"
+      && account.positionMode === "ONE_WAY"
+      && Array.isArray(account.positions) && Array.isArray(account.openOrders) && Array.isArray(account.openAlgoOrders)
+      && new Set(account.positions.map(p => p?.symbol)).size === account.positions.length
+      && account.positions.every(p => typeof p?.symbol === "string" && p.symbol.length > 0
+        && finiteValue(p.quantity ?? p.positionAmt) !== null && p.positionSide === "BOTH")
+      && [...account.openOrders, ...account.openAlgoOrders].every(o => typeof o?.symbol === "string" && o.symbol.length > 0);
+  }
+
   async reconcileProtected(run, accountSnapshot = null) {
     const symbol = this.assertAllowedSymbol(run.symbol);
     if (run.status.startsWith("OPERATOR_CLOSE")) {
@@ -1523,20 +1544,55 @@ export class TestnetCanaryExecutor extends EventEmitter {
       if (closeOrder) run.operatorCloseOrder = closeOrder;
     }
     const accountPromise = accountSnapshot ? Promise.resolve(accountSnapshot) : this.client.fetchAccountState(symbol);
-    const [account, protection] = await Promise.all([accountPromise, this.queryKnownProtection(run, accountSnapshot)]);
+    let account, protection;
+    try { [account, protection] = await Promise.all([accountPromise, this.queryKnownProtection(run, accountSnapshot)]); }
+    catch { return await this.holdProtectionCleanup(run, "ACCOUNT_OR_PROTECTION_QUERY_FAILED"); }
+    if (!this.cleanupAccountValid(account)) return await this.holdProtectionCleanup(run, "ACCOUNT_FIELDS_INVALID");
     run.exchange = account;
     run.protection = { ...run.protection, ...protection };
-    const position = account.positions.find((item) => item.symbol === symbol);
+    const position = account.positions.find((item) => item.symbol === symbol && Math.abs(Number(item.quantity ?? item.positionAmt)) > 0);
     // Legacy unsettled rows require a separately authorized migration. Preserve their
     // stored state; active positions still follow the existing protection path below.
     if (!position && run.status === "ACCOUNTING_PENDING" && !run.entryFactVerification) return run;
     const entryFacts = await this.verifyEntryFacts(run, account);
-    if (entryFacts.pending) return run;
+    if (entryFacts.pending) {
+      if (!position && run.status !== "ENTRY_FACT_CONFLICT") return await this.holdProtectionCleanup(run, "ENTRY_FACTS_UNCONFIRMED");
+      return run;
+    }
     if (!position) {
+      // An absent position is not a close. Require full owned trade quantities
+      // independently of Funding, then a new account query before any cancellation.
+      let accounting;
+      try { accounting = await this.collectRunTrades(run); }
+      catch { return await this.holdProtectionCleanup(run, "EXIT_TRADES_QUERY_FAILED"); }
+      if (!accounting.exitFactsComplete || !isTerminalOrder(run.entryOrder?.status)
+        || run.entryExecution?.remainderPending) return await this.holdProtectionCleanup(run, "OWNED_EXIT_FACTS_INCOMPLETE");
+      const requestedAt = this.now();
+      let confirmedAccount;
+      try { confirmedAccount = await this.client.fetchAccountState(symbol); }
+      catch { return await this.holdProtectionCleanup(run, "INDEPENDENT_ACCOUNT_QUERY_FAILED"); }
+      const receivedAt = this.now(), syncedAt = finiteValue(confirmedAccount?.syncedAt);
+      if (!this.cleanupAccountValid(confirmedAccount) || confirmedAccount === account
+        || syncedAt === null || syncedAt < requestedAt || syncedAt > receivedAt || receivedAt - syncedAt > 30_000) {
+        return await this.holdProtectionCleanup(run, "INDEPENDENT_ACCOUNT_NOT_FRESH_OR_COMPLETE");
+      }
+      run.exchange = confirmedAccount;
+      if (confirmedAccount.positions.some(p => p.symbol === symbol && Math.abs(Number(p.quantity ?? p.positionAmt)) > 0)
+        || confirmedAccount.openOrders.some(o => o.symbol === symbol)) {
+        return await this.holdProtectionCleanup(run, "INDEPENDENT_ACCOUNT_CONFLICT");
+      }
+      run.protection.cleanupVerification = { status: "CONFIRMED", checkedAt: receivedAt,
+        accountSyncedAt: syncedAt, entryQuantity: run.entryOrder.executedQuantity,
+        ownedOrderIds: accounting.ownedOrderIds };
+      await this.persist(run, "PROTECTION_CLEANUP_AUTHORIZED", run.protection.cleanupVerification);
       for (const [role, order] of Object.entries(run.protection)) await this.cancelAlgoIfActive(run, role, order);
-      const finalAccount = await this.client.fetchAccountState(symbol);
+      let finalAccount;
+      try { finalAccount = await this.client.fetchAccountState(symbol); }
+      catch { return await this.holdProtectionCleanup(run, "POST_CLEANUP_ACCOUNT_QUERY_FAILED"); }
+      if (!this.cleanupAccountValid(finalAccount)) return await this.holdProtectionCleanup(run, "POST_CLEANUP_ACCOUNT_FIELDS_INVALID");
       run.exchange = finalAccount;
       const residuals = this.runResiduals(finalAccount, run);
+      if (residuals.positions.length) return await this.holdProtectionCleanup(run, "POST_CLEANUP_POSITION_CONFLICT");
       if (residuals.positions.length || residuals.openOrders.length || residuals.openAlgoOrders.length) {
         run.status = "PROTECTION_CLEANUP_PENDING";
         run.error = "本执行记录的仓位已关闭，但仍有待清理订单";
@@ -1546,7 +1602,6 @@ export class TestnetCanaryExecutor extends EventEmitter {
           openAlgoOrderCount: residuals.openAlgoOrders.length,
         });
       }
-      const accounting = await this.collectRunTrades(run);
       const result = this.buildRunResult(accounting, run);
       if (!result.accountingComplete) {
         run.status = "ACCOUNTING_PENDING";

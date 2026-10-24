@@ -1,7 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { TestnetCanaryExecutor } from "../src/execution/testnet-canary-executor.js";
+import { TestnetCanaryExecutor as ProductionExecutor } from "../src/execution/testnet-canary-executor.js";
 import { BinanceApiError, TestnetWriteDisabledError } from "../src/execution/binance-testnet-trading.js";
+
+// The real client stamps each newly fetched response with its injected clock.
+// Mirror that behavior for fake snapshots without altering executor logic.
+class TestnetCanaryExecutor extends ProductionExecutor {
+  constructor(options) {
+    super(options);
+    if (options.client instanceof FakeTradingClient) options.client.snapshotNow = () => this.now();
+  }
+}
 
 function symbolInfo(symbol = "BTCUSDT") {
   if (symbol !== "BTCUSDT") {
@@ -97,7 +106,7 @@ class FakeTradingClient {
     this.maximumLeverage = 125;
   }
   async fetchAccountState(symbol = "BTCUSDT") {
-    return structuredClone({ ...this.account, symbolConfig: { ...this.account.symbolConfig, symbol } });
+    return structuredClone({ ...this.account, syncedAt: this.snapshotNow?.() ?? Date.now(), symbolConfig: { ...this.account.symbolConfig, symbol } });
   }
   async fetchAccountOverview() {
     this.calls.accountOverview += 1;
@@ -397,6 +406,20 @@ test("Demo canTrade=false 时准备和执行前都以不进撮合的测试单复
   assert.equal(client.calls.placeEntry, 1);
   const permission = await executor.permissionStatus();
   assert.equal(permission.valid, true);
+});
+
+test("TEAM014缺失canTrade必须逐笔探针；准备或执行前探针失败均不发入场单",async()=>{
+  for(const failAt of [1,2]){
+    const clock=1_500_000,store=new MemoryStore(signalRecord(clock)),client=new FakeTradingClient();
+    delete client.account.canTrade;
+    let probes=0;
+    client.testLimitOrderPermission=async()=>{probes++;if(probes===failAt)throw Error('fixture permission denied');return {accepted:true};};
+    const executor=new TestnetCanaryExecutor({client,store,enabled:true,now:()=>clock});
+    if(failAt===1)await assert.rejects(()=>executor.prepare("btc-signal-exec"),/permission denied/);
+    else {const prepared=await executor.prepare("btc-signal-exec");await assert.rejects(()=>executor.execute(prepared.run.id,prepared.confirmationCode),/permission denied/);}
+    assert.equal(probes,failAt);
+    assert.equal(client.calls.placeEntry,0);
+  }
 });
 
 test("人工金丝雀与策略绩效隔离并可在保护后幂等主动平仓", async () => {
@@ -1325,6 +1348,103 @@ test("紧急停止可在所有现有仓位均已归属且受保护时解除", as
   assert.equal((await store.getMetadata("testnet_execution_emergency_stop")).value.active, false);
 });
 
+test("TEAM014首次快照漏仓但新鲜查询仍持仓时不得撤销任何保护",async()=>{
+  const {client,executor,run}=await tpRecoveryFixture();
+  await executor.ensureProtection(run,0.0012);
+  client.order={...run.entryOrder,symbol:run.symbol,side:run.plan.entrySide,clientOrderId:run.plan.clientIds.entry};
+  client.account.positions=[{symbol:run.symbol,quantity:0.0012,positionSide:"BOTH"}];
+  const first={...structuredClone(client.account),positions:[]};
+  const before=client.calls.cancelAlgo.length;
+  await executor.reconcileProtected(run,first);
+  assert.equal(client.calls.cancelAlgo.length,before,"first missing position must not authorize protective cancellation");
+  assert.equal(client.algos.get(run.plan.clientIds.stop).status,"NEW");
+  assert.equal(run.status,"PROTECTION_INCOMPLETE");
+  assert.equal(client.calls.closeMarket??0,0);
+});
+
+async function team014ClosedFixture() {
+  const context=await tpRecoveryFixture();
+  const {client,executor,run}=context;
+  await executor.ensureProtection(run,0.0012);
+  client.order={...run.entryOrder,symbol:run.symbol,side:run.plan.entrySide,clientOrderId:run.plan.clientIds.entry};
+  const tp2=run.plan.clientIds.takeProfit2;
+  client.algos.set(tp2,{...client.algos.get(tp2),status:"FINISHED",actualQuantity:0.0012,actualOrderId:"9100"});
+  client.account.positions=[];
+  await context.store.saveExecutionRun(run);
+  return context;
+}
+
+test("TEAM014完整退出事实仍需独立新鲜零仓：有仓/陈旧/未来/缺项/冲突/查询失败均保留保护",async()=>{
+  for(const mode of ["position","stale","future","missingTimestamp","missingPositions","missingOrders","wrongAuthority","duplicatePosition","failure"]) {
+    const {client,executor,run,time,store}=await team014ClosedFixture();
+    const first={...structuredClone(client.account),syncedAt:time.now};
+    client.fetchAccountState=async()=>{
+      if(mode==='failure')throw Error('account timeout');
+      const snapshot={...structuredClone(first),syncedAt:time.now};
+      if(mode==='position')snapshot.positions=[{symbol:run.symbol,quantity:0.0012,positionSide:"BOTH"}];
+      if(mode==='stale')snapshot.syncedAt=time.now-1;
+      if(mode==='future')snapshot.syncedAt=time.now+1;
+      if(mode==='missingTimestamp')delete snapshot.syncedAt;
+      if(mode==='missingPositions')delete snapshot.positions;
+      if(mode==='missingOrders')delete snapshot.openOrders;
+      if(mode==='wrongAuthority')snapshot.authority="UNKNOWN";
+      if(mode==='duplicatePosition')snapshot.positions=[{symbol:run.symbol,quantity:0,positionSide:"BOTH"},{symbol:run.symbol,quantity:0,positionSide:"BOTH"}];
+      return snapshot;
+    };
+    await executor.reconcileProtected(run,first);
+    assert.equal(run.status,"PROTECTION_INCOMPLETE",mode);
+    assert.equal(client.calls.cancelAlgo.length,0,mode);
+    assert.equal(client.algos.get(run.plan.clientIds.stop).status,"NEW",mode);
+    assert.equal(client.calls.closeMarket??0,0,mode);
+    assert.equal(store.audit.some(e=>e.eventType==='PROTECTION_CLEANUP_AUTHORIZED'),false,mode);
+  }
+});
+
+test("TEAM014两次空仓不抵消退出证据缺失，重复/外部/超量/缺页/错误方向均不清理",async()=>{
+  for(const mode of ["missing","duplicateOnly","external","overQuantity","wrongSide","queryFailure","missingPage"]) {
+    const {client,executor,run,time,store}=await team014ClosedFixture();
+    const rows=[
+      {id:"1001",orderId:"9006",symbol:run.symbol,side:"BUY",quantity:0.0012,price:85000,commission:0,commissionAsset:"USDT",realizedPnl:0,time:time.now},
+      {id:"1002",orderId:"9100",symbol:run.symbol,side:"SELL",quantity:0.0012,price:89000,commission:0,commissionAsset:"USDT",realizedPnl:4.8,time:time.now},
+    ];
+    if(mode==='missing')rows.pop();
+    if(mode==='duplicateOnly'){rows[1].quantity=0.0006;rows.push({...rows[1]});}
+    if(mode==='external')rows[1].orderId="99999";
+    if(mode==='overQuantity')rows[1].quantity=0.0024;
+    if(mode==='wrongSide')rows[1].side="BUY";
+    client.listUserTrades=async()=>{if(mode==='queryFailure')throw Error('trades timeout');return mode==='missingPage'?null:rows;};
+    await executor.reconcileProtected(run);
+    await executor.reconcileProtected(run);
+    assert.equal(run.status,"PROTECTION_INCOMPLETE",mode);
+    assert.equal(client.calls.cancelAlgo.length,0,mode);
+    assert.equal(client.algos.get(run.plan.clientIds.stop).status,"NEW",mode);
+    assert.equal(store.audit.filter(e=>e.eventType==='PROTECTION_CLEANUP_BLOCKED').length,1,"same failure does not flood audit");
+    // The actual coordinator's existing global hold includes this exact state.
+    assert.equal((await store.listActiveExecutionRuns())[0].status,"PROTECTION_INCOMPLETE");
+  }
+});
+
+test("TEAM014完整退出和独立新鲜零仓先于撤单，Funding缺失另等且不解紧急停止",async()=>{
+  const {client,executor,run,store}=await team014ClosedFixture();
+  await store.setMetadata("testnet_execution_emergency_stop",{active:true,reason:"EXISTING_HOLD"});
+  client.listIncomeHistory=async()=>{throw Error('funding timeout');};
+  const events=[];
+  const originalAccount=client.fetchAccountState.bind(client),originalCancel=client.cancelAlgoOrder.bind(client),originalTrades=client.listUserTrades.bind(client);
+  client.fetchAccountState=async(...args)=>{events.push("ACCOUNT");return originalAccount(...args);};
+  client.listUserTrades=async(...args)=>{events.push("TRADES");return originalTrades(...args);};
+  client.cancelAlgoOrder=async(...args)=>{assert.equal(run.protection.cleanupVerification.status,"CONFIRMED");events.push("CANCEL");return originalCancel(...args);};
+  await executor.reconcileProtected(run);
+  assert.equal(run.status,"ACCOUNTING_PENDING");
+  assert.equal(run.result.netPnl,null);
+  assert.equal(events.slice(0,4).join(","),"ACCOUNT,TRADES,ACCOUNT,CANCEL");
+  assert.equal((await store.getMetadata("testnet_execution_emergency_stop")).value.active,true);
+  client.listIncomeHistory=async()=>[];
+  await executor.reconcileProtected(run);
+  assert.equal(run.status,"CLOSED");
+  assert.equal(run.result.accountingComplete,true);
+  assert.equal((await store.getMetadata("testnet_execution_emergency_stop")).value.active,true);
+});
+
 test("仓位已关闭但成交明细尚未到达时保持对账中并在后续轮询完成", async () => {
   const clock = 8_000_000;
   const store = new MemoryStore(signalRecord(clock));
@@ -1341,9 +1461,11 @@ test("仓位已关闭但成交明细尚未到达时保持对账中并在后续�
   client.hideAlgoTrades = true;
 
   run = await executor.reconcile(run.id);
-  assert.equal(run.status, "ACCOUNTING_PENDING");
-  assert.equal(run.result.accountingComplete, false);
-  assert.equal(run.result.netPnl, null);
+  // Missing exit fills cannot authorize protective cancellation, even with a zero-position snapshot.
+  assert.equal(run.status, "PROTECTION_INCOMPLETE");
+  assert.equal(client.algos.get(run.plan.clientIds.stop).status, "NEW");
+  assert.equal(client.calls.cancelAlgo.length, 0);
+  assert.equal(run.result?.netPnl ?? null, null);
 
   client.hideAlgoTrades = false;
   run = await executor.reconcile(run.id);

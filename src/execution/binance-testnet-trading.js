@@ -37,6 +37,21 @@ function finiteNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function responseNumber(value) {
+  if (value === null || value === undefined || String(value).trim() === "" || typeof value === "boolean"
+    || (typeof value !== "number" && typeof value !== "string")) return null;
+  return Number.isFinite(Number(value)) ? Number(value) : null;
+}
+
+function requireResponseArray(value, name, validate) {
+  if (!Array.isArray(value) || !value.every(row => row && typeof row === "object" && !Array.isArray(row) && validate(row))) {
+    throw new Error(`Binance Testnet ${name} 响应格式或关键字段无效`);
+  }
+  return value;
+}
+
+const responseSymbol = row => typeof row.symbol === "string" && /^[A-Z0-9]+USDT$/.test(row.symbol);
+
 function normalizeParameters(parameters) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(parameters ?? {})) {
@@ -332,7 +347,45 @@ export class BinanceTestnetTradingClient {
       this.signedRequest("GET", "/fapi/v1/openAlgoOrders", { algoType: "CONDITIONAL" }),
       this.signedRequest("GET", "/fapi/v1/positionSide/dual"),
     ]);
-    const activePositions = (Array.isArray(positions) ? positions : [])
+    const fieldDiagnostic = (object, field, valid) => ({ field,
+      type: object?.[field] === null ? "null" : Array.isArray(object?.[field]) ? "array" : typeof object?.[field],
+      missing: object === null || typeof object !== "object" || !Object.hasOwn(object, field), valid });
+    const accountObjectValid = Boolean(account) && typeof account === "object" && !Array.isArray(account);
+    const modeObjectValid = Boolean(positionMode) && typeof positionMode === "object" && !Array.isArray(positionMode);
+    // V3 does not promise V2's canTrade field. Absence is unknown permission,
+    // normalized false so the existing per-signal order/test probe remains required.
+    const canTradeValid = accountObjectValid && (account.canTrade == null || typeof account.canTrade === "boolean");
+    const balanceValid = accountObjectValid && responseNumber(account.availableBalance) !== null && Number(account.availableBalance) >= 0;
+    const dualModeValid = modeObjectValid && typeof positionMode.dualSidePosition === "boolean";
+    if (!accountObjectValid || !canTradeValid || !balanceValid || !modeObjectValid || !dualModeValid) {
+      throw new Error("Binance Testnet account/positionMode 响应格式或关键字段无效 " + JSON.stringify({
+        accountObjectValid, modeObjectValid, fields: [
+          fieldDiagnostic(account, "canTrade", canTradeValid),
+          fieldDiagnostic(account, "availableBalance", balanceValid),
+          fieldDiagnostic(positionMode, "dualSidePosition", dualModeValid),
+        ],
+      }));
+    }
+    requireResponseArray(positions, "positionRisk", row => responseSymbol(row)
+      && ["BOTH", "LONG", "SHORT"].includes(row.positionSide) && responseNumber(row.positionAmt) !== null);
+    if (new Set(positions.map(row => `${row.symbol}:${row.positionSide}`)).size !== positions.length) {
+      throw new Error("Binance Testnet positionRisk 重复仓位字段无效");
+    }
+    requireResponseArray(openOrders, "openOrders", row => responseSymbol(row)
+      && /^[1-9][0-9]*$/.test(String(row.orderId)) && typeof row.clientOrderId === "string" && row.clientOrderId.length > 0
+      && ["BUY", "SELL"].includes(row.side) && typeof row.status === "string"
+      && responseNumber(row.origQty) > 0 && responseNumber(row.executedQty ?? row.cumQty) !== null
+      && Number(row.executedQty ?? row.cumQty) >= 0 && Number(row.executedQty ?? row.cumQty) <= Number(row.origQty));
+    requireResponseArray(openAlgoOrders, "openAlgoOrders", row => {
+      const fullClose = row.closePosition === true || row.closePosition === "true";
+      const quantity = responseNumber(row.quantity);
+      return responseSymbol(row) && /^[1-9][0-9]*$/.test(String(row.algoId))
+        && typeof row.clientAlgoId === "string" && row.clientAlgoId.length > 0 && ["BUY", "SELL"].includes(row.side)
+        && typeof (row.algoStatus ?? row.status) === "string" && responseNumber(row.triggerPrice) > 0
+        && (fullClose && row.quantity == null || quantity !== null && (fullClose ? quantity >= 0 : quantity > 0))
+        && (row.actualQty == null || responseNumber(row.actualQty) !== null && Number(row.actualQty) >= 0);
+    });
+    const activePositions = positions
       .filter((item) => Math.abs(Number(item.positionAmt)) > 0)
       .map((item) => ({
         symbol: item.symbol,
@@ -348,12 +401,12 @@ export class BinanceTestnetTradingClient {
       environment: "TESTNET",
       authority: "BINANCE_TESTNET",
       syncedAt: this.now(),
-      canTrade: Boolean(account?.canTrade),
+      canTrade: account.canTrade === true,
       availableBalance: finiteNumber(account?.availableBalance),
       positionMode: positionMode?.dualSidePosition ? "HEDGE" : "ONE_WAY",
       positions: activePositions,
-      openOrders: (Array.isArray(openOrders) ? openOrders : []).map(normalizeOrder),
-      openAlgoOrders: (Array.isArray(openAlgoOrders) ? openAlgoOrders : []).map(normalizeAlgoOrder),
+      openOrders: openOrders.map(normalizeOrder),
+      openAlgoOrders: openAlgoOrders.map(normalizeAlgoOrder),
       symbolConfig: null,
     };
   }
@@ -364,7 +417,10 @@ export class BinanceTestnetTradingClient {
       this.fetchAccountOverview(),
       this.signedRequest("GET", "/fapi/v1/symbolConfig", { symbol }),
     ]);
-    const symbolConfig = (Array.isArray(symbolConfigs) ? symbolConfigs : []).find((item) => item.symbol === symbol) ?? null;
+    requireResponseArray(symbolConfigs, "symbolConfig", row => responseSymbol(row)
+      && responseNumber(row.leverage) !== null && responseNumber(row.leverage) >= 0
+      && ["ISOLATED", "CROSSED"].includes(String(row.marginType).toUpperCase()));
+    const symbolConfig = symbolConfigs.find((item) => item.symbol === symbol) ?? null;
     return {
       ...overview,
       symbolConfig: symbolConfig ? {
