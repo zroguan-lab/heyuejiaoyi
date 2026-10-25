@@ -1,4 +1,7 @@
 # 团队任务
+## TEAM-016 执行生命周期与恢复入口一致性
+状态：COMPLETE / DEPLOYED / PASS_WITH_WARNINGS。2026-10-25修复3a6b347，执行及独立QA113/113、404/404，总控404/404。受控备份停旧11456、唯一新监听/锁54596；独立scan1→2与同步推进，PHA保护完整、readiness/归属通过、停止/安全hold false、自动执行可用。518旧终态及原纪元不变；上游超时与未发生的自然TP1/BE场景仍列限制，未push。冻结策略参数不是长期目标；不混入MFE或盈利因子变化。合同tasks/TEAM-016.md；报告acceptance/2026-10-25-TEAM-016-report.md。
+
 ## TEAM-015 TP1后保护恢复误判修复
 状态：DEPLOYED / AUTO_EXECUTION_RESTORED / PASS_WITH_WARNINGS。用户2026-10-25要求异常立即修复并明确批准受控恢复。修复9cb2486；执行与独立QA62/62、389/389，第一版FAIL保留。15:23新唯一监听/锁11456，安全解除停止，独立扫描1→3/账户同步推进，PHA保护完整；自然MAGMA开空至止损结算完整（净-3.00545397U），不等于盈利或特殊TP1/BE恢复已前向验证。上游超时/CLI遗留锁/观测缺口保留，517旧终态与原纪元不变。合同tasks/TEAM-015.md；报告acceptance/2026-10-25-TEAM-015-report.md。
 
