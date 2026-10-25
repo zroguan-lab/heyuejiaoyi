@@ -1,12 +1,19 @@
 import { classifyExecutionAccountState } from "./execution-account-ownership.js";
+import { isMultiPositionPolicy, positionPolicyKnown, accountProtectionFactsKnown, blocksNewExecutionEntry } from "./protection-state.js";
 
 export function assessTestnetReadiness({ account, gateway, credentialsConfigured = false, permissionProbe = null, activeRuns = [] } = {}) {
-  const multiPosition = gateway?.positionPolicy === "ALL_ELIGIBLE" || Number(gateway?.maxExchangePositions ?? 1) > 1;
+  const multiPosition = isMultiPositionPolicy(gateway);
   const onDemandPermissionCheck = gateway?.orderSubmissionEnabled === true
     && gateway?.permissionCheckMode === "ORDER_TEST_PER_SIGNAL"
     && credentialsConfigured;
   const ownership = multiPosition ? classifyExecutionAccountState(account, activeRuns) : null;
   const checks = [
+    { code: "ACCOUNT_FACTS_CONFIRMED", passed: accountProtectionFactsKnown(account),
+      message: "账户来源、持仓方向数量和订单分页必须完整确认" },
+    { code: "EXECUTION_SAFETY_HOLD", passed: !activeRuns.some(blocksNewExecutionEntry),
+      message: "执行未知风险解除前不能准备新入场" },
+    ...(positionPolicyKnown(gateway) ? [] : [{ code: "POSITION_POLICY_UNKNOWN", passed: false,
+      message: "执行持仓政策未识别，不能推定单仓或多仓资格" }]),
     {
       code: "TESTNET_ONLY",
       passed: gateway?.environment === "TESTNET",

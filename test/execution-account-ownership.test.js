@@ -35,6 +35,7 @@ function account(overrides = {}) {
     openOrders: [],
     openAlgoOrders: [],
     ...overrides,
+    positions: (overrides.positions ?? []).map(p => ({ positionSide: "BOTH", ...p })),
   };
 }
 

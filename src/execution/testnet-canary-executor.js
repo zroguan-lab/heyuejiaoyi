@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { executionFillFacts, executionExcursionFacts, ownedExitFills, observeOwnedExitFills } from "./execution-fill-facts.js";
 import { acquireExecutionProcessLock } from "./entry-fact-process-lock.js";
 import { EventEmitter } from "node:events";
+import { ACTIVE_ALGO_STATUSES, hasManagedTp1Lifecycle, effectivePositionStop, protectionOrderKnown, accountProtectionFactsKnown, blocksNewExecutionEntry } from "./protection-state.js";
 import { BinanceApiError, TestnetWriteDisabledError } from "./binance-testnet-trading.js";
 import { buildCanaryRun, buildOperatorCanaryRun, verifyConfirmation } from "./canary-plan.js";
 import { formatToStep, splitFilledQuantity } from "./contract-rules.js";
@@ -48,7 +49,6 @@ const PROTECTED_STATUSES = new Set([
   "OPERATOR_CLOSE_SUBMITTING", "OPERATOR_CLOSE_PENDING", "OPERATOR_CLOSE_UNKNOWN", "PROTECTION_CLEANUP_PENDING",
   "ACCOUNTING_PENDING",
 ]);
-const ACTIVE_ALGO_STATUSES = new Set(["NEW", "PENDING", "TRIGGERING"]);
 const BREAK_EVEN_RETRY_BASE_MS = 30_000;
 const BREAK_EVEN_RETRY_MAX_MS = 5 * 60_000;
 const SUBMISSION_UNKNOWN_TIMEOUT_MS = 2 * 60_000;
@@ -84,19 +84,10 @@ function isActiveAlgo(order) {
   return order && ACTIVE_ALGO_STATUSES.has(order.status);
 }
 
-function hasManagedTp1Lifecycle(run) {
-  return run.status === "TP1_FILLED" || ["BREAKEVEN_PENDING", "BREAKEVEN_ACTIVE"].includes(run.protection?.phase)
-    || Boolean(run.protection?.breakEvenStop) || run.protection?.managedRecovery?.postTp1 === true;
-}
-
-function effectivePositionStop(order, run, position) {
-  if (!isActiveAlgo(order) || order.symbol !== run.symbol || order.type !== "STOP_MARKET"
-    || order.side !== run.plan.exitSide || (order.positionSide && order.positionSide !== "BOTH")) return false;
-  const remaining = Math.abs(Number(position?.quantity ?? position?.positionAmt));
-  if (!(remaining > 0) || !Number.isFinite(remaining)) return false;
-  if (order.closePosition === true) return true;
-  const quantity = finiteValue(order.quantity), tolerance = Number(run.plan.rules?.stepSize ?? 0) / 2;
-  return order.reduceOnly === true && quantity > 0 && quantity + tolerance >= remaining;
+function protectionQueryUnknown(message) {
+  const error = new Error(message);
+  error.protectionUnknown = true;
+  return error;
 }
 
 function fullyFilledClosingProtection(protection, position) {
@@ -1130,23 +1121,51 @@ export class TestnetCanaryExecutor extends EventEmitter {
     return await this.persist(run, "ENTRY_RECONCILED", { status: order.status, executedQuantity: filledQuantity });
   }
 
-  async ensureAlgo(run, key, place) {
+  async ensureAlgo(run, key, place, position = null) {
     const clientAlgoId = run.plan.clientIds[key];
-    let order = await this.client.queryAlgoOrder(clientAlgoId);
+    let order;
+    try { order = await this.client.queryAlgoOrder(clientAlgoId); }
+    catch { throw protectionQueryUnknown(`${key} 保护查询不可用`); }
     if (!order) {
-      await this.store.appendExecutionAudit(run.id, "PROTECTION_ORDER_INTENT_PERSISTED", {
+      if (run.protection[key] || run.protection.orderSubmissions?.[key]?.attempted) {
+        throw protectionQueryUnknown(`${key} 既有保护或提交结果暂未确认`);
+      }
+      run.protection.orderSubmissions ??= {};
+      run.protection.orderSubmissions[key] = { clientAlgoId, attempted: true, pending: true, at: this.now() };
+      // Persist never-submitted TP legs with the first SL intent. After an unknown
+      // SL response, PROTECTION_INCOMPLETE alone cannot distinguish these from
+      // legacy TP submissions whose outcome was never recorded.
+      if (key === "stop") for (const role of ["takeProfit1", "takeProfit2"]) this.takeProfitRecovery(run, role);
+      await this.persist(run, "PROTECTION_ORDER_INTENT_PERSISTED", {
         role: key,
         clientAlgoId,
         reason: orderReason(run, key),
-      }, this.now());
+      });
       try {
         order = await place(clientAlgoId);
       } catch (error) {
-        order = await this.client.queryAlgoOrder(clientAlgoId);
-        if (!order) throw error;
+        try { order = await this.client.queryAlgoOrder(clientAlgoId); }
+        catch { throw protectionQueryUnknown(`${key} 提交后查询不可用`); }
+        if (!order) {
+          const code = error.apiCode;
+          const explicitRejection = error instanceof BinanceApiError
+            && error.status >= 400 && error.status < 500 && ![408, 429].includes(error.status)
+            && ((code <= -1100 && code >= -1136)
+              || [-2010, -2018, -2019, -2020, -2021, -2022].includes(code)
+              || (code <= -4000 && code >= -4999));
+          if (explicitRejection) {
+            delete run.protection.orderSubmissions[key];
+            throw error;
+          }
+          throw protectionQueryUnknown(`${key} 提交结果未知，等待原ID查询`);
+        }
       }
     }
-    if (!isActiveAlgo(order)) throw new Error(`${key} 条件单不是活动状态: ${order?.status ?? "UNKNOWN"}`);
+    if (!order) throw protectionQueryUnknown(`${key} 提交响应为空，等待原ID查询`);
+    if (!isActiveAlgo(order)) throw new Error(`${key} 条件单不是活动状态: ${order.status ?? "UNKNOWN"}`);
+    if (!protectionOrderKnown(order, run, key)
+      || (position && !effectivePositionStop(order, run, position))) throw protectionQueryUnknown(`${key} 条件单身份、方向或全仓覆盖无效`);
+    if (run.protection.orderSubmissions?.[key]) run.protection.orderSubmissions[key].pending = false;
     const changed = run.protection[key]?.algoId !== order.algoId || run.protection[key]?.status !== order.status;
     run.protection[key] = order;
     if (changed) await this.persist(run, "PROTECTION_ORDER_CONFIRMED", {
@@ -1180,19 +1199,23 @@ export class TestnetCanaryExecutor extends EventEmitter {
 
   async ensureTakeProfit(run, key, place) {
     const state = this.takeProfitRecovery(run, key);
-    if (Number(run.protection[key]?.actualQuantity) > 0) return true;
+    if (Number(run.protection[key]?.actualQuantity) > 0 && protectionOrderKnown(run.protection[key], run, key)) return true;
     let order;
     try { order = await this.client.queryAlgoOrder(state.currentClientId); }
     catch { return await this.deferTakeProfit(run, key, state, "QUERY_UNKNOWN"); }
     order ??= state.terminalOrder ?? null;
     if (order) {
-      order = { ...order, clientAlgoId: order.clientAlgoId ?? state.currentClientId };
+      if (!protectionOrderKnown(order, run, key) || String(order.clientAlgoId) !== String(state.currentClientId)) {
+        return await this.deferTakeProfit(run, key, state, "ORDER_IDENTITY_INVALID");
+      }
       run.protection[key] = order;
       if (Number(order.actualQuantity) > 0) return true; // Includes partial/terminal fills; never replenish.
       if (order.status === "FINISHED" || order.actualOrderId) {
         return await this.deferTakeProfit(run, key, state, "FINISHED_OR_CHILD_FILL_UNRESOLVED");
       }
-      if (isActiveAlgo(order)) { state.reason = null; return true; }
+      if (isActiveAlgo(order)) {
+        state.reason = null; return true;
+      }
       if (!TP_FAILED_STATUSES.has(order.status)) return await this.deferTakeProfit(run, key, state, "ORDER_STATE_UNKNOWN");
       if (order.status !== "REJECTED" && (order.actualQuantity === null || order.actualQuantity === undefined)) {
         return await this.deferTakeProfit(run, key, state, "TERMINAL_FILL_QUANTITY_UNKNOWN");
@@ -1222,12 +1245,16 @@ export class TestnetCanaryExecutor extends EventEmitter {
     } catch (error) {
       try { order = await this.client.queryAlgoOrder(state.currentClientId); } catch { order = null; }
       if (!order && error instanceof BinanceApiError && error.apiCode === -2021) {
-        order = { status: "REJECTED", clientAlgoId: state.currentClientId, actualQuantity: 0 };
+        order = { status: "REJECTED", clientAlgoId: state.currentClientId, actualQuantity: 0,
+          symbol: run.symbol, side: run.plan.exitSide, type: "TAKE_PROFIT_MARKET", positionSide: "BOTH" };
         state.terminalOrder = order;
       }
       if (!order) return await this.deferTakeProfit(run, key, state, "SUBMISSION_UNKNOWN_QUERY_ONLY");
     }
     if (!order) return await this.deferTakeProfit(run, key, state, "SUBMISSION_UNKNOWN_QUERY_ONLY");
+    if (!protectionOrderKnown(order, run, key) || String(order.clientAlgoId) !== String(state.currentClientId)) {
+      return await this.deferTakeProfit(run, key, state, "ORDER_IDENTITY_INVALID");
+    }
     state.pending = false;
     run.protection[key] = { ...order, clientAlgoId: order.clientAlgoId ?? state.currentClientId };
     await this.persist(run, isActiveAlgo(order) ? "PROTECTION_ORDER_CONFIRMED" : "TP_RECOVERY_RESPONSE", {
@@ -1247,8 +1274,13 @@ export class TestnetCanaryExecutor extends EventEmitter {
         side: run.plan.exitSide,
         triggerPrice: run.plan.prices.stopLoss,
         clientAlgoId,
-      }));
+      }), { symbol: run.symbol, quantity: run.plan.direction === "SHORT" ? -filledQuantity : filledQuantity });
     } catch (error) {
+      if (error.protectionUnknown) {
+        run.status = "PROTECTION_INCOMPLETE";
+        run.error = errorMessage(error);
+        return await this.persist(run, "STOP_PROTECTION_UNKNOWN", { reason: run.error });
+      }
       run.status = "ERROR_UNPROTECTED";
       run.error = errorMessage(error);
       run.performanceEligible = false;
@@ -1357,6 +1389,14 @@ export class TestnetCanaryExecutor extends EventEmitter {
       const recovery = run.protection.tpRecovery?.[key];
       const clientAlgoId = recovery?.currentClientId ?? run.plan.clientIds[key];
       if (!clientAlgoId) return [key, null];
+      const observe = order => {
+        if (["stop", "breakEvenStop"].includes(key)) {
+          run.protection.observations ??= {};
+          run.protection.observations[key] = { known: Boolean(order) || !(run.protection[key]
+            || run.protection.orderSubmissions?.[key]?.attempted), checkedAt: this.now() };
+        }
+        return [key, order];
+      };
       if (recovery) {
         let current = null;
         let filled = null;
@@ -1365,7 +1405,11 @@ export class TestnetCanaryExecutor extends EventEmitter {
           try { order = activeByClientId.get(String(id)) ?? await this.client.queryAlgoOrder(id); }
           catch { continue; } // Per-leg UNKNOWN is handled without suppressing its sibling.
           if (!order) continue;
-          const known = { ...order, clientAlgoId: order.clientAlgoId ?? id };
+          if (!protectionOrderKnown(order, run, key) || String(order.clientAlgoId) !== String(id)) {
+            recovery.reason = "ORDER_IDENTITY_INVALID";
+            continue;
+          }
+          const known = { ...order };
           if (id === clientAlgoId) current = known;
           else run.protection[`tpHistory_${key}_${index}`] = { ...known, recoveryRole: key };
           if (Number(known.actualQuantity) > 0 || known.status === "FINISHED") filled = known;
@@ -1373,8 +1417,17 @@ export class TestnetCanaryExecutor extends EventEmitter {
         return [key, filled ?? current];
       }
       const active = activeByClientId.get(String(clientAlgoId));
-      if (active) return [key, active];
-      try { return [key, await this.client.queryAlgoOrder(clientAlgoId)]; }
+      const validate = order => {
+        if (order && ["takeProfit1", "takeProfit2"].includes(key)
+          && (!protectionOrderKnown(order, run, key) || String(order.clientAlgoId) !== String(clientAlgoId))) {
+          const state = this.takeProfitRecovery(run, key);
+          state.attempted = true; state.pending = true; state.reason = "ORDER_IDENTITY_INVALID";
+          return observe(null);
+        }
+        return observe(order);
+      };
+      if (active) return validate(active);
+      try { return validate(await this.client.queryAlgoOrder(clientAlgoId)); }
       catch (error) {
         if (!["takeProfit1", "takeProfit2"].includes(key)) throw error;
         const state = this.takeProfitRecovery(run, key);
@@ -1556,13 +1609,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   cleanupAccountValid(account) {
-    return account?.environment === "TESTNET" && account.authority === "BINANCE_TESTNET"
-      && account.positionMode === "ONE_WAY"
-      && Array.isArray(account.positions) && Array.isArray(account.openOrders) && Array.isArray(account.openAlgoOrders)
-      && new Set(account.positions.map(p => p?.symbol)).size === account.positions.length
-      && account.positions.every(p => typeof p?.symbol === "string" && p.symbol.length > 0
-        && finiteValue(p.quantity ?? p.positionAmt) !== null && p.positionSide === "BOTH")
-      && [...account.openOrders, ...account.openAlgoOrders].every(o => typeof o?.symbol === "string" && o.symbol.length > 0);
+    return accountProtectionFactsKnown(account);
   }
 
   async reconcileProtected(run, accountSnapshot = null) {
@@ -1697,6 +1744,10 @@ export class TestnetCanaryExecutor extends EventEmitter {
     }
     const beEffective = effectivePositionStop(protection.breakEvenStop, run, position);
     const originalEffective = effectivePositionStop(protection.stop, run, position);
+    if (!beEffective && !originalEffective && Object.values(run.protection.observations ?? {}).some(fact => !fact.known)) {
+      return managedTp1 ? await this.holdManagedProtection(run, "PROTECTION_QUERY_EMPTY")
+        : await this.holdProtectionCleanup(run, "PROTECTION_QUERY_EMPTY");
+    }
     if (managedTp1 && !protection.breakEvenStop && !originalEffective) {
       return await this.holdManagedProtection(run, "MANAGED_STOP_QUERY_UNCONFIRMED");
     }
@@ -1746,7 +1797,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
           triggerPrice: run.plan.prices.entry,
           clientAlgoId,
           quantity,
-        }));
+        }), position);
         if (!effectivePositionStop(run.protection.breakEvenStop, run, position)) {
           return await this.holdManagedProtection(run, "BREAK_EVEN_CONFIRMATION_INVALID");
         }
@@ -2000,7 +2051,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
       this.store.listActiveExecutionRuns(),
     ]);
     const classification = classifyExecutionAccountState(account, activeRuns);
-    const unsafeRuns = activeRuns.filter((run) => [
+    const unsafeRuns = activeRuns.filter((run) => blocksNewExecutionEntry(run) || [
       "ENTRY_SUBMITTING",
       "ENTRY_FACT_PENDING",
       "ENTRY_FACT_CONFLICT",
@@ -2026,6 +2077,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
     if (active.some((run) => run.status !== "PREPARED") && typeof this.client.fetchAccountOverview === "function") {
       try {
         account = await this.client.fetchAccountOverview();
+        if (!accountProtectionFactsKnown(account)) throw new Error("账户批量对账字段未确认");
         this.lastReconcileAt = this.now();
         this.lastReconcileError = null;
       } catch (error) {
@@ -2035,6 +2087,11 @@ export class TestnetCanaryExecutor extends EventEmitter {
           retryAt: Number.isFinite(error?.retryAt) ? error.retryAt : Number.isFinite(this.client.blockedUntil) ? this.client.blockedUntil : null,
         };
         this.logger.error(`[execution] 账户批量对账暂停: ${this.lastReconcileError.message}`);
+        for (const run of active) {
+          if (!["OPEN_PROTECTED", "TP1_FILLED", "PROTECTION_PENDING", "PROTECTION_INCOMPLETE"].includes(run.status)) continue;
+          if (hasManagedTp1Lifecycle(run)) await this.holdManagedProtection(run, "BATCH_ACCOUNT_UNCONFIRMED");
+          else await this.holdProtectionCleanup(run, "BATCH_ACCOUNT_UNCONFIRMED");
+        }
         return [];
       }
     }
@@ -2051,15 +2108,20 @@ export class TestnetCanaryExecutor extends EventEmitter {
 
   async start() {
     this.acquireProcessLock();
-    const active = await this.store.listActiveExecutionRuns();
-    const unmanaged = active.filter((run) => run.status !== "PREPARED");
-    if (!this.enabled && unmanaged.length) {
-      throw new Error(`存在 ${unmanaged.length} 个未结束的测试网执行记录，写入锁关闭时拒绝启动执行协调器`);
+    try {
+      const active = await this.store.listActiveExecutionRuns();
+      const unmanaged = active.filter((run) => run.status !== "PREPARED");
+      if (!this.enabled && unmanaged.length) {
+        throw new Error(`存在 ${unmanaged.length} 个未结束的测试网执行记录，写入锁关闭时拒绝启动执行协调器`);
+      }
+      await this.reconcileAll();
+      if (this.timer) return;
+      this.timer = setInterval(() => void this.reconcileAll(), this.pollMs);
+      this.timer.unref?.();
+    } catch (error) {
+      this.stop();
+      throw error;
     }
-    await this.reconcileAll();
-    if (this.timer) return;
-    this.timer = setInterval(() => void this.reconcileAll(), this.pollMs);
-    this.timer.unref?.();
   }
 
   stop() {

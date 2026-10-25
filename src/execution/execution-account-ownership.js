@@ -1,5 +1,5 @@
 const TERMINAL_STATUSES = new Set(["CLOSED", "CANCELED", "REJECTED", "FAILED"]);
-const ACTIVE_ALGO_STATUSES = new Set(["NEW", "PENDING", "TRIGGERING"]);
+import { ACTIVE_ALGO_STATUSES, effectivePositionStop, accountProtectionFactsKnown, blocksNewExecutionEntry } from "./protection-state.js";
 const ENTRY_MAY_EXIST_STATUSES = new Set([
   "ENTRY_SUBMITTING",
   "SUBMISSION_UNKNOWN",
@@ -58,24 +58,12 @@ function actualDirection(position) {
 }
 
 function isValidStop(order, run, position) {
-  const structurallyValid = Boolean(order)
-    && ACTIVE_ALGO_STATUSES.has(order.status)
-    && order.symbol === run.symbol
-    && order.type === "STOP_MARKET"
-    && order.side === run.plan?.exitSide;
-  if (!structurallyValid) return false;
-  if (order.closePosition === true) return true;
-  const protectedQuantity = Number(order.quantity);
-  const positionQuantity = Math.abs(Number(position?.quantity));
-  const quantityTolerance = Number(run.plan?.rules?.stepSize ?? 0) / 2;
-  return order.reduceOnly === true
-    && Number.isFinite(protectedQuantity)
-    && protectedQuantity > 0
-    && Number.isFinite(positionQuantity)
-    && protectedQuantity + quantityTolerance >= positionQuantity;
+  return effectivePositionStop(order, run, position);
 }
 
 export function classifyExecutionAccountState(account, activeRuns = []) {
+  if (!accountProtectionFactsKnown(account)) return { safe: false, owned: { positions: [], ordinaryOrders: [], algoOrders: [] },
+    unknown: [{ kind: "ACCOUNT_FACTS", reason: "ACCOUNT_FIELDS_UNCONFIRMED" }], conflicts: [], missingStops: [] };
   const runs = activeRuns.filter((run) => run && !TERMINAL_STATUSES.has(run.status));
   const conflicts = [];
   const unknown = [];
@@ -106,6 +94,7 @@ export function classifyExecutionAccountState(account, activeRuns = []) {
 
   const positions = [];
   for (const position of account?.positions ?? []) {
+    if (Number(position.quantity ?? position.positionAmt) === 0) continue;
     const run = symbolClaims.get(position.symbol);
     const direction = actualDirection(position);
     if (!run || !hasEntrySubmissionEvidence(run)) {
@@ -174,6 +163,8 @@ export function classifyExecutionAccountState(account, activeRuns = []) {
   const algoOrders = [];
   for (const order of account?.openAlgoOrders ?? []) {
     const run = algoClaims.get(String(order.clientAlgoId ?? ""));
+    // Ownership is not effectiveness: a known but invalid target stop must stay
+    // attributable so the existing ERROR_UNPROTECTED safety close can act.
     if (!run || order.symbol !== run.symbol) {
       unknown.push({ kind: "ALGO_ORDER", symbol: order.symbol, clientAlgoId: order.clientAlgoId ?? null, algoId: order.algoId ?? null });
       continue;
@@ -206,7 +197,7 @@ export function assertAccountReadyForNewEntry(account, activeRuns, { candidateSy
   }
   if (account.positionMode !== "ONE_WAY") throw new Error("测试网账户不是单向持仓");
   const uncertainSubmission = activeRuns.find((run) => run.id !== candidateRunId
-    && ["SUBMISSION_UNKNOWN", "ENTRY_FACT_CONFLICT"].includes(run.status));
+    && blocksNewExecutionEntry(run));
   if (uncertainSubmission) throw new Error(`执行记录 ${uncertainSubmission.id} 的入场提交结果未知，禁止准备新订单`);
   const sameSymbol = activeRuns.find((run) => run.id !== candidateRunId
     && !TERMINAL_STATUSES.has(run.status)

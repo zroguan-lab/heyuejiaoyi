@@ -6,6 +6,7 @@ import { providerLabel } from "../exchanges/create-client.js";
 import { randomUUID } from "node:crypto";
 import { createManualTrade } from "../domain/trade-lifecycle.js";
 import { assessTestnetReadiness } from "../execution/readiness.js";
+import { blocksNewExecutionEntry } from "../execution/protection-state.js";
 import { projectExecutionRuns } from "../execution/execution-run-projection.js";
 import { buildExecutionSummary, buildStrategyPerformance } from "../presentation/strategy-performance.js";
 import { buildShadowPerformance } from "../presentation/shadow-performance.js";
@@ -103,12 +104,7 @@ export function createDashboardServer({ monitor, accountMonitor = null, executio
     const permissionProbe = canaryExecutor?.permissionStatus ? await canaryExecutor.permissionStatus() : null;
     const activeRuns = await (store.listActiveExecutionRuns?.() ?? []);
     const emergencyStop = (await store.getMetadata?.("testnet_execution_emergency_stop"))?.value ?? { active: false };
-    const unsafeRun = activeRuns.find((run) => [
-      "SUBMISSION_UNKNOWN",
-      "PROTECTION_INCOMPLETE",
-      "ERROR_UNPROTECTED",
-      "OPERATOR_CLOSE_UNKNOWN",
-    ].includes(run.status));
+    const unsafeRun = activeRuns.find(blocksNewExecutionEntry);
     const safetyHold = unsafeRun
       ? { active: true, runId: unsafeRun.id, status: unsafeRun.status }
       : { active: false, runId: null, status: null };

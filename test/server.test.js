@@ -37,6 +37,8 @@ test("研究API返回组合状态并允许记录手动跟单但不会暴露执�
     plan: { sourceType: "OPERATOR_CANARY", direction: "LONG", entrySide: "BUY", exitSide: "SELL", quantity: "0.001", prices: { entry: "100000" } },
   }];
   const store = {
+    activeRuns: [],
+    async listActiveExecutionRuns() { return this.activeRuns; },
     async listSignals() { return [{ selected: true, candidate }]; },
     async listManualTrades() { return manual; },
     async getSignal() { return { selected: true, candidate }; },
@@ -55,17 +57,19 @@ test("研究API返回组合状态并允许记录手动跟单但不会暴露执�
     connected: true,
     environment: "TESTNET",
     mode: "READ_ONLY",
+    authority: "BINANCE_TESTNET",
     account: { canTrade: true },
     positionMode: "ONE_WAY",
     positions: [],
     openOrders: [],
     openAlgoOrders: [],
   });
+  let submissionEnabled = false;
   const executionGateway = {
     snapshot: () => ({
       environment: "TESTNET",
       mode: "READ_ONLY",
-      orderSubmissionEnabled: false,
+      orderSubmissionEnabled: submissionEnabled,
       cancelEnabled: false,
       emergencyStopAvailable: false,
     }),
@@ -117,6 +121,17 @@ test("研究API返回组合状态并允许记录手动跟单但不会暴露执�
     assert.equal(execution.gateway.orderSubmissionEnabled, false);
     assert.equal(execution.safetyHold.active, false);
     assert.equal(execution.account.mode, "READ_ONLY");
+
+    submissionEnabled = true;
+    for (const status of ["ENTRY_FACT_PENDING", "ENTRY_FACT_CONFLICT", "OPERATOR_CLOSE_UNKNOWN", "SUBMISSION_UNKNOWN", "PROTECTION_INCOMPLETE", "ERROR_UNPROTECTED", "ENTRY_PENDING", "PARTIALLY_FILLED", "OPEN_PROTECTED", "TP1_FILLED"]) {
+      store.activeRuns = [{ id: "matrix", status }];
+      const state = await (await fetch(`${origin}/api/execution/status`)).json();
+      const blocked = !["ENTRY_PENDING", "PARTIALLY_FILLED", "OPEN_PROTECTED", "TP1_FILLED"].includes(status);
+      assert.equal(state.safetyHold.active, blocked, status);
+      assert.equal(state.effectiveOrderSubmissionEnabled, !blocked, status);
+    }
+    store.activeRuns = [];
+    submissionEnabled = false;
 
     const runsResponse = await fetch(`${origin}/api/execution/runs`);
     assert.equal(runsResponse.status, 200);

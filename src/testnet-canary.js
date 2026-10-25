@@ -5,6 +5,18 @@ import { BinanceTestnetTradingClient } from "./execution/binance-testnet-trading
 import { TestnetCanaryExecutor } from "./execution/testnet-canary-executor.js";
 import { ORDER_PERMISSION_METADATA_KEY, probeTestnetOrderPermission } from "./execution/order-permission.js";
 import { resolveExecutionAllowedSymbols } from "./execution/execution-symbols.js";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+// Resource wrapper only. It neither dispatches commands nor grants trading access.
+export async function runWithCanaryCleanup(store, action) {
+  let executor = null;
+  try { return await action(value => { executor = value; return value; }); }
+  finally {
+    try { executor?.stop(); }
+    finally { store.close(); }
+  }
+}
 
 function usage() {
   return [
@@ -41,8 +53,8 @@ async function main() {
   if (config.marketEnvironment !== "TESTNET") throw new Error("金丝雀执行工具只能连接 Binance Demo/Testnet");
   if (!config.execution.accountReadOnlyEnabled) throw new Error("必须先启用 BINANCE_TESTNET_ACCOUNT_READ_ONLY");
   const store = new ResearchStore(config.databasePath);
-  await store.initialize();
-  try {
+  return await runWithCanaryCleanup(store, async registerExecutor => {
+    await store.initialize();
     const executionAllowedSymbols = await resolveExecutionAllowedSymbols(store, config);
     const client = new BinanceTestnetTradingClient({
       baseUrl: config.binanceBaseUrl,
@@ -53,7 +65,7 @@ async function main() {
       timeoutMs: config.requestTimeoutMs,
       recvWindow: config.execution.recvWindow,
     });
-    const executor = new TestnetCanaryExecutor({
+    const executor = registerExecutor(new TestnetCanaryExecutor({
       client,
       store,
       enabled: config.execution.orderSubmissionEnabled,
@@ -66,7 +78,7 @@ async function main() {
       pullbackEntryTtlMs: config.execution.pullbackEntryTtlMs,
       pollMs: config.execution.canaryPollMs,
       strategySource: config.execution.strategySource,
-    });
+    }));
     const [command = "status", first, second] = process.argv.slice(2);
     if (command === "status") {
       const [snapshot, account] = await Promise.all([executor.snapshot(), client.fetchAccountState(config.execution.canarySymbol)]);
@@ -163,12 +175,10 @@ async function main() {
       return;
     }
     throw new Error(usage());
-  } finally {
-    store.close();
-  }
+  });
 }
 
-main().catch((error) => {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main().catch((error) => {
   console.error(error instanceof Error ? error.message : error);
   process.exitCode = 1;
 });

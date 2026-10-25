@@ -224,7 +224,7 @@ test("其他标的已有受保护仓位时仍可执行新的不同标的信号",
 test("存在提交结果未知或无保护异常时协调器全局暂停新入场", async () => {
   const now = 3_700_000;
   const next = signal("eth-next", now, { symbol: "ETHUSDT", score: 80 });
-  for (const status of ["SUBMISSION_UNKNOWN", "ENTRY_FACT_CONFLICT", "PROTECTION_INCOMPLETE", "ERROR_UNPROTECTED"]) {
+  for (const status of ["SUBMISSION_UNKNOWN", "ENTRY_FACT_PENDING", "ENTRY_FACT_CONFLICT", "PROTECTION_INCOMPLETE", "ERROR_UNPROTECTED", "OPERATOR_CLOSE_UNKNOWN"]) {
     const monitor = new EventEmitter();
     const store = new MemoryStore([next], [{ id: `run-${status}`, signalId: "old", symbol: "BTCUSDT", status }]);
     const executor = new FakeExecutor(store);
@@ -233,7 +233,22 @@ test("存在提交结果未知或无保护异常时协调器全局暂停新入�
     await coordinator.drain();
     assert.equal(executor.prepared.length, 0);
     assert.equal(coordinator.snapshot().lastDecision.reason, "EXECUTION_SAFETY_HOLD");
+    await coordinator.trySignal("eth-next", "TEAM016_MATRIX");
+    assert.equal(executor.prepared.length, 0);
+    assert.equal(coordinator.snapshot().lastDecision.reason, "EXECUTION_SAFETY_HOLD");
     coordinator.stop();
+  }
+});
+
+test("TEAM016正常ENTRY_PENDING和部分成交保留不同标的并行政策",async()=>{
+  const now=3_800_000;
+  for(const status of ["ENTRY_PENDING","PARTIALLY_FILLED"]){
+    const record=signal("normal-next",now,{symbol:"ETHUSDT",score:80});
+    const store=new MemoryStore([record],[{id:"normal-active",signalId:"old",symbol:"BTCUSDT",status}]);
+    const executor=new FakeExecutor(store);
+    const coordinator=new StrategyExecutionCoordinator({monitor:new EventEmitter(),executor,store,enabled:true,now:()=>now});
+    try {await coordinator.start();await coordinator.drain();assert.deepEqual(executor.prepared,["normal-next"],status);}
+    finally {coordinator.stop();}
   }
 });
 

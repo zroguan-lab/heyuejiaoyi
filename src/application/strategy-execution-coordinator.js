@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { blocksNewExecutionEntry } from "../execution/protection-state.js";
 import { buildEntryReason } from "../domain/trade-reason.js";
 import { buildDecisionSnapshot, verifyDecisionSnapshot } from "../domain/decision-snapshot.js";
 import {
@@ -200,7 +201,7 @@ export class StrategyExecutionCoordinator extends EventEmitter {
     if (existing) return this.recordDecision({ status: "SKIPPED", signalId, trigger, reason: "ALREADY_RECORDED", runId: existing.id });
 
     const active = await this.store.listActiveExecutionRuns();
-    const safetyHold = active.find((run) => ["SUBMISSION_UNKNOWN", "ENTRY_FACT_CONFLICT", "PROTECTION_INCOMPLETE", "ERROR_UNPROTECTED"].includes(run.status));
+    const safetyHold = active.find(blocksNewExecutionEntry);
     if (safetyHold) {
       return this.recordDecision({ status: "DEFERRED", signalId, trigger, reason: "EXECUTION_SAFETY_HOLD", runId: safetyHold.id });
     }
@@ -307,7 +308,7 @@ export class StrategyExecutionCoordinator extends EventEmitter {
 
   async sweep(trigger = "SWEEP") {
     const initialActive = await this.store.listActiveExecutionRuns();
-    const safetyHold = initialActive.find((run) => ["SUBMISSION_UNKNOWN", "ENTRY_FACT_CONFLICT", "PROTECTION_INCOMPLETE", "ERROR_UNPROTECTED"].includes(run.status));
+    const safetyHold = initialActive.find(blocksNewExecutionEntry);
     if (safetyHold) return this.recordDecision({ status: "SKIPPED", trigger, reason: "EXECUTION_SAFETY_HOLD", runId: safetyHold.id });
     const records = await this.listExecutionSignals(200);
     const eligible = records
