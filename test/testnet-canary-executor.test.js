@@ -960,6 +960,203 @@ test("TP1 成交后撤销原止损并把剩余仓位止损移动到保本", asyn
   );
 });
 
+test("TEAM015 TP1后入场事实补查不能回到INITIAL误判已取消旧SL",async()=>{
+  const {client,executor,run,store}=await tpRecoveryFixture();
+  client.order={...run.entryOrder,symbol:run.symbol,side:run.plan.entrySide,clientOrderId:run.plan.clientIds.entry};
+  await executor.ensureProtection(run,0.0012);
+  const tp1=run.plan.clientIds.takeProfit1;
+  client.algos.set(tp1,{...client.algos.get(tp1),status:"FINISHED",actualQuantity:0.0006,actualOrderId:"9901"});
+  client.account.positions=[{symbol:run.symbol,quantity:0.0006,positionSide:"BOTH"}];
+  await executor.reconcileProtected(run);
+  assert.equal(run.status,"TP1_FILLED");
+  assert.equal(run.protection.phase,"BREAKEVEN_ACTIVE");
+  const placements=client.calls.placeAlgo.length,cancels=client.calls.cancelAlgo.length;
+  run.status="ENTRY_FACT_PENDING";
+  await store.saveExecutionRun(run);
+  const recovered=await executor.reconcile(run.id);
+  assert.equal(recovered.status,"TP1_FILLED");
+  assert.equal(recovered.protection.phase,"BREAKEVEN_ACTIVE");
+  assert.equal(client.calls.closeMarket??0,0,"valid BE must not be mistaken for missing original SL");
+  assert.equal(client.calls.placeAlgo.length,placements);
+  assert.equal(client.calls.cancelAlgo.length,cancels);
+  assert.equal(store.audit.some(e=>e.eventType==='STOP_PROTECTION_FAILED'),false);
+  assert.equal(await store.getMetadata("testnet_execution_emergency_stop"),null);
+});
+
+async function team015ManagedFixture() {
+  const context=await tpRecoveryFixture();
+  const {client,executor,run}=context;
+  client.order={...run.entryOrder,symbol:run.symbol,side:run.plan.entrySide,clientOrderId:run.plan.clientIds.entry};
+  await executor.ensureProtection(run,0.0012);
+  const tp1=run.plan.clientIds.takeProfit1;
+  client.algos.set(tp1,{...client.algos.get(tp1),status:"FINISHED",actualQuantity:0.0006,actualOrderId:"9901"});
+  client.account.positions=[{symbol:run.symbol,quantity:0.0006,positionSide:"BOTH"}];
+  await executor.reconcileProtected(run);
+  assert.equal(run.protection.phase,"BREAKEVEN_ACTIVE");
+  return context;
+}
+
+test("TEAM015 QA反例：保护查询失败后TP1暂空，当前有效BE保持管理且不回INITIAL",async()=>{
+  const {client,executor,run,store}=await team015ManagedFixture();
+  const query=client.queryAlgoOrder.bind(client),before=client.calls.placeAlgo.length,cancels=client.calls.cancelAlgo.length;
+  client.queryAlgoOrder=async id=>{if(id===run.plan.clientIds.breakEvenStop)throw Error('protection timeout');return query(id);};
+  await executor.reconcileProtected(run);
+  assert.equal(run.status,"PROTECTION_INCOMPLETE");
+  assert.equal(run.protection.phase,"BREAKEVEN_ACTIVE");
+  client.queryAlgoOrder=async id=>id===run.plan.clientIds.takeProfit1?null:query(id);
+  await executor.reconcileProtected(run);
+  assert.equal(run.status,"TP1_FILLED");
+  assert.equal(run.protection.phase,"BREAKEVEN_ACTIVE");
+  assert.equal(client.calls.closeMarket??0,0);
+  assert.equal(client.calls.placeAlgo.length,before);
+  assert.equal(client.calls.cancelAlgo.length,cancels);
+  assert.equal(store.audit.some(e=>e.eventType==='STOP_PROTECTION_FAILED'),false);
+});
+
+test("TEAM015 QA阻断：TP1暂空且BE有效时，失败TP2仍退避恢复并保持阻断",async()=>{
+  const {client,executor,run,store,time}=await team015ManagedFixture();
+  const query=client.queryAlgoOrder.bind(client),tp1=run.plan.clientIds.takeProfit1,tp2=run.plan.clientIds.takeProfit2;
+  client.queryAlgoOrder=async id=>id===tp1?null:query(id);
+  client.algos.set(tp2,{...client.algos.get(tp2),status:"REJECTED",actualQuantity:0});
+  const placements=client.calls.placeAlgo.length,cancels=client.calls.cancelAlgo.length,be=structuredClone(run.protection.breakEvenStop);
+  await executor.reconcileProtected(run);
+  assert.equal(run.status,"PROTECTION_INCOMPLETE");
+  assert.equal(run.protection.tpRecovery.takeProfit2.reason,"TERMINAL_REJECTED");
+  assert.match(run.error,/takeProfit2/);
+  assert.equal(client.calls.placeAlgo.length,placements);
+  time.now+=30_000;
+  await executor.reconcileProtected(run);
+  assert.equal(run.status,"TP1_FILLED");
+  assert.equal(run.error,null);
+  assert.equal(run.protection.takeProfit2.clientAlgoId,tp2+"-r1");
+  assert.equal(client.calls.placeAlgo.length,placements+1);
+  assert.equal(client.calls.placeAlgo.filter(x=>x.role==='tp1').length,1);
+  assert.equal(client.calls.cancelAlgo.length,cancels);
+  assert.deepEqual(run.protection.breakEvenStop,be);
+  assert.equal(client.calls.closeMarket??0,0);
+  assert.equal(store.audit.some(e=>e.eventType==='STOP_PROTECTION_FAILED'),false);
+});
+
+test("TEAM015 TP1暂空时TP2连续拒绝仍有界且每次保持阻断，不以生命周期标记清空错误",async()=>{
+  const {client,executor,run,time}=await team015ManagedFixture();
+  const query=client.queryAlgoOrder.bind(client),tp1=run.plan.clientIds.takeProfit1,tp2=run.plan.clientIds.takeProfit2;
+  client.queryAlgoOrder=async id=>id===tp1?null:query(id);
+  client.algos.set(tp2,{...client.algos.get(tp2),status:"REJECTED",actualQuantity:0});
+  let replacements=0;
+  client.placeTakeProfitClose=async()=>{replacements++;throw new BinanceApiError({status:400,code:-2021,message:"fixture immediately trigger"});};
+  const be=structuredClone(run.protection.breakEvenStop),cancels=client.calls.cancelAlgo.length;
+  for(let i=0;i<8;i++){
+    await executor.reconcileProtected(run);
+    assert.equal(run.status,"PROTECTION_INCOMPLETE");
+    assert.match(run.error,/takeProfit2/);
+    time.now+=300_000;
+  }
+  assert.equal(replacements,3);
+  assert.equal(run.protection.tpRecovery.takeProfit2.reason,"RETRY_LIMIT_REACHED");
+  assert.deepEqual(run.protection.breakEvenStop,be);
+  assert.equal(client.calls.cancelAlgo.length,cancels);
+  assert.equal(client.calls.closeMarket??0,0);
+});
+
+test("TEAM015 TP1暂空且BE未确认但旧SL有效时，不正常化完成或撤销旧SL",async()=>{
+  const {client,executor,run}=await team015ManagedFixture();
+  const query=client.queryAlgoOrder.bind(client),tp1=run.plan.clientIds.takeProfit1,be=run.plan.clientIds.breakEvenStop,sl=run.plan.clientIds.stop;
+  client.algos.set(sl,{...client.algos.get(sl),status:"NEW"});
+  client.queryAlgoOrder=async id=>id===tp1||id===be?null:query(id);
+  const cancels=client.calls.cancelAlgo.length,placements=client.calls.placeAlgo.length;
+  await executor.reconcileProtected(run);
+  assert.equal(run.status,"PROTECTION_INCOMPLETE");
+  assert.equal(run.protection.managedRecovery.reason,"BREAK_EVEN_REQUIRES_CONFIRMATION");
+  assert.equal(client.algos.get(sl).status,"NEW");
+  assert.equal(client.calls.cancelAlgo.length,cancels);
+  assert.equal(client.calls.placeAlgo.length,placements);
+  assert.equal(client.calls.closeMarket??0,0);
+});
+
+test("TEAM015 假空仓与入场查询超时跨轮恢复，不丢BE阶段也不按原数量重建保护",async()=>{
+  const {client,executor,run,store}=await team015ManagedFixture();
+  const query=client.queryOrder.bind(client),before=client.calls.placeAlgo.length,cancels=client.calls.cancelAlgo.length;
+  client.queryOrder=async()=>{throw Error('entry lookup timeout');};
+  await executor.reconcileProtected(run,{...structuredClone(client.account),positions:[]});
+  assert.equal(run.status,"PROTECTION_INCOMPLETE");
+  assert.equal(run.protection.phase,"BREAKEVEN_ACTIVE");
+  assert.equal(run.protection.managedRecovery.postTp1,true);
+  client.queryOrder=query;
+  run.status="ENTRY_FACT_PENDING";await store.saveExecutionRun(run);
+  const recovered=await executor.reconcile(run.id);
+  assert.equal(recovered.status,"TP1_FILLED");
+  assert.equal(recovered.protection.breakEvenStop.quantity,0.0006);
+  assert.equal(recovered.entryOrder.executedQuantity,0.0012);
+  assert.equal(client.calls.placeAlgo.length,before);
+  assert.equal(client.calls.cancelAlgo.length,cancels);
+  assert.equal(client.calls.closeMarket??0,0);
+});
+
+test("TEAM015 余单恢复继续取消待撤部分，但不重建旧SL或重分TP数量",async()=>{
+  const {client,executor,run,store}=await team015ManagedFixture();
+  const before=client.calls.placeAlgo.length,cancels=client.calls.cancelAlgo.length;
+  client.order={...client.order,status:"PARTIALLY_FILLED"};
+  run.entryExecution={...run.entryExecution,remainderPending:true};
+  await store.saveExecutionRun(run);
+  const recovered=await executor.reconcile(run.id);
+  assert.equal(recovered.status,"TP1_FILLED");
+  assert.equal(recovered.protection.phase,"BREAKEVEN_ACTIVE");
+  assert.equal(recovered.entryExecution.remainderPending,false);
+  assert.equal(client.calls.cancelEntry,1);
+  assert.equal(client.calls.placeAlgo.length,before);
+  assert.equal(client.calls.cancelAlgo.length,cancels);
+  assert.equal(client.calls.closeMarket??0,0);
+});
+
+test("TEAM015 当前BE查不到或账户失效时冻结，不以缓存BE误清理或误平仓",async()=>{
+  for(const mode of ["missingBE","accountFailure","invalidAccount"]){
+    const {client,executor,run}=await team015ManagedFixture();
+    const query=client.queryAlgoOrder.bind(client),account=client.fetchAccountState.bind(client),before=client.calls.placeAlgo.length,cancels=client.calls.cancelAlgo.length;
+    if(mode==='missingBE')client.queryAlgoOrder=async id=>id===run.plan.clientIds.breakEvenStop?null:query(id);
+    else client.fetchAccountState=async()=>{if(mode==='accountFailure')throw Error('account timeout');return {...await account(),positions:null};};
+    await executor.reconcileProtected(run);
+    assert.equal(run.status,"PROTECTION_INCOMPLETE",mode);
+    assert.equal(run.protection.phase,"BREAKEVEN_ACTIVE",mode);
+    assert.equal(client.calls.closeMarket??0,0,mode);
+    assert.equal(client.calls.placeAlgo.length,before,mode);
+    assert.equal(client.calls.cancelAlgo.length,cancels,mode);
+  }
+});
+
+test("TEAM015 BE数量不足或方向错误不能冒充有效保护，原SL有效时不得取消",async()=>{
+  for(const keepOriginal of [true,false])for(const mode of ["quantity","direction"]){
+    const {client,executor,run,store}=await team015ManagedFixture();
+    const beId=run.plan.clientIds.breakEvenStop,slId=run.plan.clientIds.stop;
+    client.algos.set(beId,{...client.algos.get(beId),...(mode==='quantity'?{quantity:0.0002}:{side:"BUY"})});
+    if(keepOriginal)client.algos.set(slId,{...client.algos.get(slId),status:"NEW"});
+    await executor.reconcileProtected(run);
+    assert.notEqual(run.status,"TP1_FILLED");
+    if(keepOriginal){assert.equal(run.status,"PROTECTION_INCOMPLETE");assert.equal(client.algos.get(slId).status,"NEW");assert.equal(client.calls.closeMarket??0,0);}
+    else {assert.equal((await store.getMetadata("testnet_execution_emergency_stop")).value.active,true);assert.equal(client.calls.closeMarket,1);}
+  }
+});
+
+test("TEAM015 BE初次确认数量不足不得撤原SL，直接INITIAL重入也被拒绝",async()=>{
+  const {client,executor,run}=await tpRecoveryFixture();
+  client.order={...run.entryOrder,symbol:run.symbol,side:run.plan.entrySide,clientOrderId:run.plan.clientIds.entry};
+  await executor.ensureProtection(run,0.0012);
+  const tp1=run.plan.clientIds.takeProfit1;
+  client.algos.set(tp1,{...client.algos.get(tp1),status:"FINISHED",actualQuantity:0.0006,actualOrderId:"9901"});
+  client.account.positions=[{symbol:run.symbol,quantity:0.0006,positionSide:"BOTH"}];
+  const place=client.placeStopClose.bind(client);
+  client.placeStopClose=async request=>place({...request,quantity:0.0002});
+  await executor.reconcileProtected(run);
+  assert.equal(run.status,"PROTECTION_INCOMPLETE");
+  assert.equal(run.protection.phase,"BREAKEVEN_PENDING");
+  assert.equal(client.algos.get(run.plan.clientIds.stop).status,"NEW");
+  assert.equal(client.calls.cancelAlgo.length,0);
+  const before=client.calls.placeAlgo.length;
+  await executor.ensureProtection(run,0.0012);
+  assert.equal(run.protection.phase,"BREAKEVEN_PENDING");
+  assert.equal(client.calls.placeAlgo.length,before);
+  assert.equal(client.calls.closeMarket??0,0);
+});
+
 test("保本止损创建失败时保留原止损，不产生无保护窗口", async () => {
   let clock = 3_800_000;
   const store = new MemoryStore(signalRecord(clock));

@@ -84,6 +84,21 @@ function isActiveAlgo(order) {
   return order && ACTIVE_ALGO_STATUSES.has(order.status);
 }
 
+function hasManagedTp1Lifecycle(run) {
+  return run.status === "TP1_FILLED" || ["BREAKEVEN_PENDING", "BREAKEVEN_ACTIVE"].includes(run.protection?.phase)
+    || Boolean(run.protection?.breakEvenStop) || run.protection?.managedRecovery?.postTp1 === true;
+}
+
+function effectivePositionStop(order, run, position) {
+  if (!isActiveAlgo(order) || order.symbol !== run.symbol || order.type !== "STOP_MARKET"
+    || order.side !== run.plan.exitSide || (order.positionSide && order.positionSide !== "BOTH")) return false;
+  const remaining = Math.abs(Number(position?.quantity ?? position?.positionAmt));
+  if (!(remaining > 0) || !Number.isFinite(remaining)) return false;
+  if (order.closePosition === true) return true;
+  const quantity = finiteValue(order.quantity), tolerance = Number(run.plan.rules?.stepSize ?? 0) / 2;
+  return order.reduceOnly === true && quantity > 0 && quantity + tolerance >= remaining;
+}
+
 function fullyFilledClosingProtection(protection, position) {
   const positionQuantity = Math.abs(Number(position?.quantity ?? position?.positionAmt ?? 0));
   if (!Number.isFinite(positionQuantity) || positionQuantity <= 0) return null;
@@ -972,6 +987,8 @@ export class TestnetCanaryExecutor extends EventEmitter {
   async reconcileEntry(run, account = null) {
     const symbol = this.assertAllowedSymbol(run.symbol);
     const clientOrderId = run.plan.clientIds.entry;
+    const managedTp1 = hasManagedTp1Lifecycle(run);
+    if (managedTp1 && !run.entryExecution?.remainderPending) return await this.reconcileProtected(run, account);
     if (run.status === "SUBMISSION_UNKNOWN" && !(Number(run.entryExecution?.submittedAt) > 0) && !run.entryOrder) {
       run.status = "FAILED"; run.performanceEligible = false; run.executionException = PRE_ENTRY_FAILURE_EXCEPTION;
       run.error = "入场订单提交前配置失败";
@@ -979,9 +996,10 @@ export class TestnetCanaryExecutor extends EventEmitter {
       return await this.persist(run, "PRE_ENTRY_CONFIGURATION_RECOVERED", { clientOrderId, reason: run.result.reason });
     }
     const facts = await this.verifyEntryFacts(run, account);
-    if (facts.pending) return run;
+    if (facts.pending) return managedTp1 && run.status !== "ENTRY_FACT_CONFLICT"
+      ? await this.holdManagedProtection(run, "ENTRY_FACTS_UNCONFIRMED") : run;
     let order = facts.order;
-    if (facts.position) {
+    if (facts.position && !managedTp1) {
       run.entryExecution = { ...(run.entryExecution ?? {}), remainderPending: !order || !isTerminalOrder(order.status) };
       run.status = "PROTECTION_PENDING";
       const protectedRun = await this.ensureProtection(run, Math.abs(Number(facts.position.quantity ?? facts.position.positionAmt)),
@@ -1027,6 +1045,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
     }
     run.entryOrder = order;
     run.entryExecution = { ...(run.entryExecution ?? {}), remainderPending: !isTerminalOrder(order.status) };
+    if (managedTp1) return await this.reconcileProtected(run, facts.snapshot);
     const filledQuantity = Number(order.executedQuantity ?? 0);
     if (!(filledQuantity > 0) && facts.position) {
       run.entryExecution.remainderPending = true;
@@ -1220,6 +1239,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
 
   async ensureProtection(run, filledQuantity, { stopOnly = false } = {}) {
     this.acquireProcessLock();
+    if (hasManagedTp1Lifecycle(run)) return await this.holdManagedProtection(run, "INITIAL_PROTECTION_REENTRY_BLOCKED");
     run.protection.phase = "INITIAL";
     try {
       await this.ensureAlgo(run, "stop", (clientAlgoId) => this.client.placeStopClose({
@@ -1515,6 +1535,16 @@ export class TestnetCanaryExecutor extends EventEmitter {
     };
   }
 
+  async holdManagedProtection(run, reason) {
+    const changed = run.protection.managedRecovery?.reason !== reason || run.status !== "PROTECTION_INCOMPLETE";
+    run.protection.managedRecovery = { postTp1: true, reason, checkedAt: this.now() };
+    run.status = "PROTECTION_INCOMPLETE";
+    run.error = `TP1后保护等待核实: ${reason}`;
+    if (changed) return await this.persist(run, "MANAGED_PROTECTION_RECHECK_PENDING", { reason });
+    await this.store.saveExecutionRun(run);
+    return run;
+  }
+
   async holdProtectionCleanup(run, reason) {
     const changed = run.protection.cleanupVerification?.reason !== reason || run.status !== "PROTECTION_INCOMPLETE";
     run.protection.cleanupVerification = { status: "PENDING", reason, checkedAt: this.now() };
@@ -1537,6 +1567,8 @@ export class TestnetCanaryExecutor extends EventEmitter {
 
   async reconcileProtected(run, accountSnapshot = null) {
     const symbol = this.assertAllowedSymbol(run.symbol);
+    const managedTp1 = hasManagedTp1Lifecycle(run);
+    if (managedTp1) run.protection.managedRecovery = { ...run.protection.managedRecovery, postTp1: true };
     if (run.status.startsWith("OPERATOR_CLOSE")) {
       let closeOrder = (accountSnapshot?.openOrders ?? [])
         .find((item) => item.symbol === symbol && item.clientOrderId === run.plan.clientIds.operatorClose) ?? null;
@@ -1546,8 +1578,10 @@ export class TestnetCanaryExecutor extends EventEmitter {
     const accountPromise = accountSnapshot ? Promise.resolve(accountSnapshot) : this.client.fetchAccountState(symbol);
     let account, protection;
     try { [account, protection] = await Promise.all([accountPromise, this.queryKnownProtection(run, accountSnapshot)]); }
-    catch { return await this.holdProtectionCleanup(run, "ACCOUNT_OR_PROTECTION_QUERY_FAILED"); }
-    if (!this.cleanupAccountValid(account)) return await this.holdProtectionCleanup(run, "ACCOUNT_FIELDS_INVALID");
+    catch { return managedTp1 ? await this.holdManagedProtection(run, "ACCOUNT_OR_PROTECTION_QUERY_FAILED")
+      : await this.holdProtectionCleanup(run, "ACCOUNT_OR_PROTECTION_QUERY_FAILED"); }
+    if (!this.cleanupAccountValid(account)) return managedTp1 ? await this.holdManagedProtection(run, "ACCOUNT_FIELDS_INVALID")
+      : await this.holdProtectionCleanup(run, "ACCOUNT_FIELDS_INVALID");
     run.exchange = account;
     run.protection = { ...run.protection, ...protection };
     const position = account.positions.find((item) => item.symbol === symbol && Math.abs(Number(item.quantity ?? item.positionAmt)) > 0);
@@ -1556,6 +1590,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
     if (!position && run.status === "ACCOUNTING_PENDING" && !run.entryFactVerification) return run;
     const entryFacts = await this.verifyEntryFacts(run, account);
     if (entryFacts.pending) {
+      if (managedTp1 && run.status !== "ENTRY_FACT_CONFLICT") return await this.holdManagedProtection(run, "ENTRY_FACTS_UNCONFIRMED");
       if (!position && run.status !== "ENTRY_FACT_CONFLICT") return await this.holdProtectionCleanup(run, "ENTRY_FACTS_UNCONFIRMED");
       return run;
     }
@@ -1655,11 +1690,23 @@ export class TestnetCanaryExecutor extends EventEmitter {
 
     const tp1 = protection.takeProfit1;
     const tp1Filled = Number(tp1?.actualQuantity ?? 0) > 0;
+    const tp1LifecycleConfirmed = tp1Filled || managedTp1;
     if (tp1Filled && run.performance?.timeToTp1Ms === null) {
       const tp1At = Number(tp1?.updateTime) || this.now();
       markRunMilestone(run, "TP1", tp1At);
     }
-    const activeStopBeforeRecovery = isActiveAlgo(protection.breakEvenStop) || isActiveAlgo(protection.stop);
+    const beEffective = effectivePositionStop(protection.breakEvenStop, run, position);
+    const originalEffective = effectivePositionStop(protection.stop, run, position);
+    if (managedTp1 && !protection.breakEvenStop && !originalEffective) {
+      return await this.holdManagedProtection(run, "MANAGED_STOP_QUERY_UNCONFIRMED");
+    }
+    if (managedTp1 && isActiveAlgo(protection.breakEvenStop) && !beEffective && originalEffective) {
+      return await this.holdManagedProtection(run, "BREAK_EVEN_COVERAGE_INVALID");
+    }
+    if (managedTp1 && !beEffective && !tp1Filled && originalEffective) {
+      return await this.holdManagedProtection(run, "BREAK_EVEN_REQUIRES_CONFIRMATION");
+    }
+    const activeStopBeforeRecovery = beEffective || originalEffective;
     if (run.status === "ERROR_UNPROTECTED") {
       if (!activeStopBeforeRecovery) {
         const protectionWasNeverSubmitted = !protection.stop && !protection.breakEvenStop
@@ -1681,7 +1728,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
       && (run.protection.mode === "SINGLE_TARGET" ? ["takeProfit2"] : ["takeProfit2", "takeProfit1"])
         .some(key => TP_FAILED_STATUSES.has(protection[key]?.status)
           && !(Number(protection[key]?.actualQuantity) > 0) && !protection[key]?.actualOrderId);
-    if ((["PROTECTION_PENDING", "PROTECTION_INCOMPLETE"].includes(run.status) || initialTPFailed)
+    if (!managedTp1 && (["PROTECTION_PENDING", "PROTECTION_INCOMPLETE"].includes(run.status) || initialTPFailed)
       && run.protection.phase !== "BREAKEVEN_PENDING" && !tp1Filled
       && !fullyFilledClosingProtection(protection, position)) {
       return await this.ensureProtection(run, Math.abs(Number(position.quantity)));
@@ -1700,6 +1747,9 @@ export class TestnetCanaryExecutor extends EventEmitter {
           clientAlgoId,
           quantity,
         }));
+        if (!effectivePositionStop(run.protection.breakEvenStop, run, position)) {
+          return await this.holdManagedProtection(run, "BREAK_EVEN_CONFIRMATION_INVALID");
+        }
       } catch (error) {
         const attempts = Number(run.protection.breakEvenRetry?.attempts ?? 0) + 1;
         const retryDelayMs = Math.min(BREAK_EVEN_RETRY_MAX_MS, BREAK_EVEN_RETRY_BASE_MS * (2 ** (attempts - 1)));
@@ -1732,7 +1782,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
       return await this.persist(run, "STOP_MOVED_TO_BREAKEVEN", { triggerPrice: run.plan.prices.entry });
     }
 
-    if (tp1Filled && isActiveAlgo(protection.breakEvenStop) && isActiveAlgo(protection.stop)) {
+    if (tp1LifecycleConfirmed && beEffective && isActiveAlgo(protection.stop)) {
       try {
         await this.cancelAlgoIfActive(run, "stop", protection.stop);
       } catch (error) {
@@ -1743,14 +1793,14 @@ export class TestnetCanaryExecutor extends EventEmitter {
     // TP1 completion must not suppress recovery of the independent remaining TP2.
     // Never rebuild TP1, alter BE, or submit a TP when a closing fill is settling.
     let tp2RecoveryIncomplete = false;
-    if (tp1Filled && isActiveAlgo(protection.breakEvenStop)
+    if (tp1LifecycleConfirmed && beEffective
       && !isActiveAlgo(protection.takeProfit2) && !fullyFilledClosingProtection(protection, position)) {
       tp2RecoveryIncomplete = !(await this.ensureTakeProfit(run, "takeProfit2", clientAlgoId => this.client.placeTakeProfitClose({
         symbol, side: run.plan.exitSide, triggerPrice: run.plan.prices.takeProfit2, clientAlgoId,
       })));
     }
 
-    const activeStop = isActiveAlgo(protection.breakEvenStop) || isActiveAlgo(protection.stop);
+    const activeStop = beEffective || originalEffective;
     if (activeStop && run.protection.exitSettlement) delete run.protection.exitSettlement;
     if (!activeStop) {
       const closingFill = fullyFilledClosingProtection(protection, position);
@@ -1790,7 +1840,8 @@ export class TestnetCanaryExecutor extends EventEmitter {
       return await this.emergencyCloseUnprotectedRun(run, "ACTIVE_STOP_MISSING");
     }
     await this.observeEntryFillVerification(run);
-    run.status = tp2RecoveryIncomplete ? "PROTECTION_INCOMPLETE" : tp1Filled ? "TP1_FILLED" : "OPEN_PROTECTED";
+    if (tp1LifecycleConfirmed && beEffective) run.protection.phase = "BREAKEVEN_ACTIVE";
+    run.status = tp2RecoveryIncomplete ? "PROTECTION_INCOMPLETE" : tp1LifecycleConfirmed ? "TP1_FILLED" : "OPEN_PROTECTED";
     run.error = tp2RecoveryIncomplete ? `takeProfit2: ${run.protection.tpRecovery.takeProfit2.reason}` : null;
     return await this.persist(run, "POSITION_RECONCILED", { quantity: position.quantity, status: run.status });
   }
