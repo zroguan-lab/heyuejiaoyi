@@ -1,7 +1,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { executionFillFacts, executionExcursionFacts, observeOwnedExitFills } from "../src/execution/execution-fill-facts.js";
+import { executionFillFacts, executionExcursionFacts, observeOwnedExitFills, entryOrderTimeFacts, entryFillTimeMatches, isTerminalOrder } from "../src/execution/execution-fill-facts.js";
 import { projectExecutionRun } from "../src/execution/execution-run-projection.js";
+
+test("TEAM018共享终态谓词保持执行器原五态及非终态语义",()=>{
+  for(const status of ["FILLED","CANCELED","EXPIRED","EXPIRED_IN_MATCH","REJECTED"])assert.equal(isTerminalOrder(status),true,status);
+  for(const status of ["NEW","PARTIALLY_FILLED","PENDING_CANCEL","UNKNOWN",null,undefined])assert.equal(isTerminalOrder(status),false,String(status));
+});
+
+test("TEAM018同订单时间边界不混用本地时间，更新时间不排除更早部分成交",()=>{
+  const run={symbol:"BTCUSDT",plan:{entrySide:"BUY",clientIds:{entry:"intent"}},entryExecution:{submittedAt:20000},
+    entryOrder:{symbol:"BTCUSDT",side:"BUY",clientOrderId:"intent",orderId:"1",createdTime:10000,updateTime:11000,status:"CANCELED"}};
+  assert.equal(entryFillTimeMatches(run,{time:10500}),true);
+  assert.equal(entryFillTimeMatches(run,{time:9999}),false);assert.equal(entryFillTimeMatches(run,{time:11001}),false);
+  assert.equal(entryFillTimeMatches(run,{time:10500.5}),false);assert.equal(entryFillTimeMatches(run,{time:true}),false);
+  for(const value of [undefined,null,true,"",NaN,Infinity,0,-1,10000.5]){
+    assert.equal(entryOrderTimeFacts({...run,entryOrder:{...run.entryOrder,createdTime:value}}).status,"UNKNOWN");
+    assert.equal(entryOrderTimeFacts({...run,entryOrder:{...run.entryOrder,updateTime:value}}).status,"UNKNOWN");
+  }
+  assert.equal(entryOrderTimeFacts({...run,entryOrder:{...run.entryOrder,updateTime:9999}}).status,"UNKNOWN");
+  assert.equal(entryOrderTimeFacts({...run,entryExecution:{...run.entryExecution,exchangeSubmittedAt:10001}}).reason,"ORDER_PREDATES_SUBMISSION_INTENT");
+});
 
 function fixture(direction = "LONG") {
   const side = direction === "LONG" ? "BUY" : "SELL";

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { executionFillFacts, executionExcursionFacts, ownedExitFills, observeOwnedExitFills } from "./execution-fill-facts.js";
+import { executionFillFacts, executionExcursionFacts, ownedExitFills, observeOwnedExitFills, entryOrderTimeFacts, entryFillTimeMatches, isTerminalOrder } from "./execution-fill-facts.js";
 import { acquireExecutionProcessLock } from "./entry-fact-process-lock.js";
 import { EventEmitter } from "node:events";
 import { ACTIVE_ALGO_STATUSES, hasManagedTp1Lifecycle, effectivePositionStop, protectionOrderKnown, accountProtectionFactsKnown, blocksNewExecutionEntry } from "./protection-state.js";
@@ -74,10 +74,6 @@ function errorMessage(error) {
 
 function hashPlan(plan) {
   return createHash("sha256").update(JSON.stringify(plan)).digest("hex");
-}
-
-function isTerminalOrder(status) {
-  return new Set(["FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"]).has(status);
 }
 
 function isActiveAlgo(order) {
@@ -750,6 +746,8 @@ export class TestnetCanaryExecutor extends EventEmitter {
         }
         run.status = "ENTRY_SUBMITTING";
         run.entryExecution.submittedAt = this.now();
+        run.entryExecution.exchangeSubmittedAt = typeof this.client.getExchangeTime === "function"
+          ? await this.client.getExchangeTime() : null;
         run.entryFactVerification = {
           status: "SUBMISSION_INTENT", checks: 0, history: [], submittedAt: this.now(),
           accountFingerprint: this.client.credentialFingerprint
@@ -775,6 +773,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
           reason: orderReason(run, "entry"),
         });
         let order = await this.client.queryOrder(symbol, run.plan.clientIds.entry);
+        let recoveredFromQuery = Boolean(order);
         if (!order) {
           try {
             order = await this.client.placeLimitOrder({
@@ -787,6 +786,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
             });
           } catch (error) {
             order = await this.client.queryOrder(symbol, run.plan.clientIds.entry);
+            recoveredFromQuery = Boolean(order);
             if (!order) {
               run.status = "SUBMISSION_UNKNOWN";
               run.error = errorMessage(error);
@@ -794,6 +794,11 @@ export class TestnetCanaryExecutor extends EventEmitter {
               return run;
             }
           }
+        }
+        if (recoveredFromQuery && entryOrderTimeFacts(run, order).status !== "CONFIRMED") {
+          run.status = "ENTRY_FACT_CONFLICT";
+          run.error = "客户端订单号查询返回旧订单或缺少可核验的交易所创建时间";
+          return await this.persist(run, "ENTRY_FACT_CONFLICT", { reason: "SUBMISSION_ORDER_IDENTITY_OR_TIME_CONFLICT" });
         }
         run.entryOrder = order;
         run.entryFactVerification = {
@@ -918,17 +923,18 @@ export class TestnetCanaryExecutor extends EventEmitter {
     const identityMatches = order && order.clientOrderId === run.plan.clientIds.entry
       && order.symbol === run.symbol && order.side === run.plan.entrySide
       && validOrderId(order.orderId)
-      && (!validOrderId(state.ack?.orderId) || String(order.orderId) === String(state.ack.orderId));
+      && (!validOrderId(state.ack?.orderId) || String(order.orderId) === String(state.ack.orderId))
+      && (!run.entryExecution?.exchangeSubmittedAt || entryOrderTimeFacts(run, order).status === "CONFIRMED");
     let fillsConfirmed = false;
     // Protection always precedes the potentially slow trade-history request.
     if (!position && !identityMatches && !queryFailed && validOrderId(run.entryOrder?.orderId)) {
       try {
-        const accounting = await this.collectRunTrades(run);
+        const accounting = await this.collectRunTrades(run, { refreshEntryTime: false });
         const entryFills = accounting.trades.filter(t => String(t.orderId) === String(run.entryOrder.orderId));
         fillsConfirmed = accounting.tradesComplete && entryFills.length > 0
           && entryFills.every(t => validOrderId(t.id) && t.symbol === run.symbol && t.side === run.plan.entrySide
             && finiteValue(t.quantity) > 0 && finiteValue(t.price) > 0 && finiteValue(t.time) !== null
-            && Number(t.time) >= Number(run.entryExecution?.submittedAt ?? run.createdAt))
+            && entryFillTimeMatches(run, t))
           && quantitiesEqual(entryFills.reduce((sum, t) => sum + Number(t.quantity), 0), Number(run.entryOrder.executedQuantity));
       } catch { queryFailed = true; }
     }
@@ -956,19 +962,19 @@ export class TestnetCanaryExecutor extends EventEmitter {
     return { pending: false, position, order: identityMatches ? order : null, snapshot };
   }
 
-  async observeEntryFillVerification(run) {
+  async observeEntryFillVerification(run, verifiedAccounting = null) {
     if (!run.entryFactVerification) return run;
     const checkedAt = this.now();
     let status = "QUERY_UNAVAILABLE", quantity = null, count = null;
     try {
-      const accounting = await this.collectRunTrades(run);
+      const accounting = verifiedAccounting ?? await this.collectRunTrades(run);
       const rows = accounting.trades.filter(t => String(t.orderId) === String(run.entryOrder?.orderId));
-      count = rows.length;
+      count = accounting.entryTimeStatus === "CONFIRMED" ? rows.length : null;
       const valid = rows.every(t => validOrderId(t.id) && t.symbol === run.symbol && t.side === run.plan.entrySide
         && finiteValue(t.quantity) > 0 && finiteValue(t.price) > 0 && finiteValue(t.time) !== null
-        && Number(t.time) >= Number(run.entryExecution?.submittedAt ?? run.createdAt));
-      quantity = valid ? rows.reduce((sum, t) => sum + Number(t.quantity), 0) : null;
-      status = !valid ? "CONFLICT" : !count ? "DELAYED"
+        && entryFillTimeMatches(run, t));
+      quantity = valid && accounting.entryTimeStatus === "CONFIRMED" ? rows.reduce((sum, t) => sum + Number(t.quantity), 0) : null;
+      status = accounting.entryTimeStatus !== "CONFIRMED" ? "QUERY_UNAVAILABLE" : !valid ? "CONFLICT" : !count ? "DELAYED"
         : accounting.tradesComplete && quantitiesEqual(quantity, Number(run.entryOrder?.executedQuantity)) ? "VERIFIED" : "INCOMPLETE";
     } catch {}
     run.entryFactVerification.fills = { status, quantity, count, checkedAt };
@@ -1455,7 +1461,15 @@ export class TestnetCanaryExecutor extends EventEmitter {
     }
   }
 
-  async collectRunTrades(run) {
+  async collectRunTrades(run, { refreshEntryTime = true } = {}) {
+    let timeFacts = entryOrderTimeFacts(run);
+    if (refreshEntryTime && timeFacts.status !== "CONFIRMED" && typeof this.client.queryOrder === "function") {
+      const refreshed = await this.client.queryOrder(run.symbol, run.plan.clientIds.entry);
+      if (entryOrderTimeFacts(run, refreshed).status === "CONFIRMED") {
+        run.entryOrder = refreshed;
+        timeFacts = entryOrderTimeFacts(run);
+      }
+    }
     const entryOrderIds = new Set([run.entryOrder?.orderId].filter(validOrderId).map(String));
     const exitOrders = [run.operatorCloseOrder, ...Object.values(run.protection ?? {})]
       .filter(order => order && typeof order === "object");
@@ -1465,12 +1479,14 @@ export class TestnetCanaryExecutor extends EventEmitter {
       return validOrderId(order.orderId) ? [String(order.orderId)] : [];
     }));
     const ownedOrderIds = new Set([...entryOrderIds, ...exitOrderIds]);
-    const startTime = Math.max(0, Number(run.entryExecution?.submittedAt ?? run.createdAt) - 60_000);
-    const endTime = this.now();
+    const startTime = timeFacts.startTime;
+    const exchangeNow = typeof this.client.getExchangeTime === "function" ? await this.client.getExchangeTime() : null;
+    const knownUpdates = [run.entryOrder, ...exitOrders].map(order => finiteValue(order?.updateTime)).filter(value => value > 0);
+    const endTime = Math.max(exchangeNow ?? 0, ...knownUpdates, startTime ?? 0);
     const unique = new Map();
-    let tradesComplete = startTime >= endTime - 180 * 24 * 60 * 60_000;
+    let tradesComplete = timeFacts.status === "CONFIRMED" && endTime > 0 && startTime >= endTime - 180 * 24 * 60 * 60_000;
     const week = 7 * 24 * 60 * 60_000 - 1;
-    for (let sliceStart = startTime; sliceStart <= endTime; sliceStart += week + 1) {
+    for (let sliceStart = startTime; tradesComplete && sliceStart <= endTime; sliceStart += week + 1) {
       const sliceEnd = Math.min(endTime, sliceStart + week);
       let fromId = null;
       for (let page = 0; page < 1000; page++) {
@@ -1501,7 +1517,8 @@ export class TestnetCanaryExecutor extends EventEmitter {
       && trade.side === (entryOrderIds.has(String(trade.orderId)) ? run.plan.entrySide : run.plan.exitSide)
       && finiteValue(trade.quantity) > 0 && finiteValue(trade.price) > 0
       && validOrderId(trade.id) && finiteValue(trade.time) !== null
-      && Number(trade.time) >= Number(run.entryExecution?.submittedAt ?? run.createdAt) && Number(trade.time) <= endTime
+      && Number(trade.time) >= startTime && Number(trade.time) <= endTime
+      && (!entryOrderIds.has(String(trade.orderId)) || entryFillTimeMatches(run, trade))
       && (finiteValue(trade.quoteQuantity) === null || quantitiesEqual(Number(trade.quoteQuantity), Number(trade.quantity) * Number(trade.price)))
       && finiteValue(trade.commission) !== null
       && trade.commissionAsset === "USDT" && finiteValue(trade.realizedPnl) !== null);
@@ -1543,7 +1560,8 @@ export class TestnetCanaryExecutor extends EventEmitter {
       }
     }
     const fundingIncome = [...income.values()];
-    return { trades, fundingIncome, fundingPnl: fundingComplete ? fundingIncome.reduce((sum, item) => sum + Number(item.income), 0) : null,
+    return { trades, entryTimeStatus: timeFacts.status, entryTimeReason: timeFacts.reason,
+      fundingIncome, fundingPnl: fundingComplete ? fundingIncome.reduce((sum, item) => sum + Number(item.income), 0) : null,
       fundingComplete, tradesComplete, ownedOrderIds: [...ownedOrderIds],
       exitFactsComplete: tradesComplete && fieldsComplete && quantityComplete && entryOrderIds.size > 0 && exitOrderIds.size > 0,
       accountingComplete: tradesComplete && fieldsComplete && fundingComplete && quantityComplete && entryOrderIds.size > 0 && exitOrderIds.size > 0 };
@@ -1647,6 +1665,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
       let accounting;
       try { accounting = await this.collectRunTrades(run); }
       catch { return await this.holdProtectionCleanup(run, "EXIT_TRADES_QUERY_FAILED"); }
+      await this.observeEntryFillVerification(run, accounting);
       if (!accounting.exitFactsComplete || !isTerminalOrder(run.entryOrder?.status)
         || run.entryExecution?.remainderPending) return await this.holdProtectionCleanup(run, "OWNED_EXIT_FACTS_INCOMPLETE");
       const requestedAt = this.now();

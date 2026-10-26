@@ -119,7 +119,8 @@ function normalizeOrder(item) {
     executedQuantity: finiteNumber(item.executedQty ?? item.cumQty),
     cumulativeQuote: finiteNumber(item.cumQuote),
     reduceOnly: Boolean(item.reduceOnly),
-    updateTime: Number(item.updateTime ?? item.time),
+    createdTime: item.createTime != null && Number(item.createTime) !== Number(item.time) ? null : responseNumber(item.time),
+    updateTime: responseNumber(item.updateTime),
   };
 }
 
@@ -243,6 +244,11 @@ export class BinanceTestnetTradingClient {
       this.timeSyncPromise = this.syncServerTime().finally(() => { this.timeSyncPromise = null; });
     }
     await this.timeSyncPromise;
+  }
+
+  async getExchangeTime() {
+    await this.ensureTimeSync();
+    return this.now() + this.serverOffsetMs;
   }
 
   async signedRequest(method, pathname, parameters = {}, allowTimestampRetry = true) {

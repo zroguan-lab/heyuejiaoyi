@@ -2,6 +2,34 @@
 const number = (v) => v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Number(v);
 const positive = (v) => number(v) > 0 ? number(v) : null;
 const close = (a, b) => Math.abs(a - b) <= Math.max(1e-10, Math.abs(b) * 1e-6);
+const exchangeTimestamp = value => (typeof value === "number" || (typeof value === "string" && value.trim() !== ""))
+  && Number.isSafeInteger(Number(value)) && Number(value) > 0 ? Number(value) : null;
+const TERMINAL_ORDER_STATUSES = new Set(["FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"]);
+export const isTerminalOrder = status => TERMINAL_ORDER_STATUSES.has(status);
+
+// Exchange timestamps only. updateTime is an upper bound for a terminal order,
+// never a substitute for its creation time (partial fills can precede it).
+export function entryOrderTimeFacts(run, order = run.entryOrder) {
+  const unknown = reason => ({ status: "UNKNOWN", startTime: null, reason });
+  if (!order || !/^[1-9][0-9]*$/.test(String(order.orderId ?? "")) || order.symbol !== run.symbol || order.side !== run.plan?.entrySide
+    || order.clientOrderId !== run.plan?.clientIds?.entry
+    || (run.entryOrder?.orderId && String(order.orderId) !== String(run.entryOrder.orderId))
+    || (run.entryFactVerification?.ack?.orderId && String(order.orderId) !== String(run.entryFactVerification.ack.orderId))) return unknown("ENTRY_ORDER_IDENTITY_CONFLICT");
+  const created = exchangeTimestamp(order.createdTime), updated = exchangeTimestamp(order.updateTime);
+  if (!created || !updated || updated < created) return unknown("EXCHANGE_ORDER_TIME_UNKNOWN_OR_CONFLICT");
+  const submitted = exchangeTimestamp(run.entryExecution?.exchangeSubmittedAt);
+  if (run.entryExecution?.exchangeSubmittedAt != null && !submitted) return unknown("EXCHANGE_SUBMISSION_TIME_UNKNOWN");
+  if (submitted && created < submitted) return unknown("ORDER_PREDATES_SUBMISSION_INTENT");
+  return { status: "CONFIRMED", startTime: created, reason: null };
+}
+
+export function entryFillTimeMatches(run, fill) {
+  const basis = entryOrderTimeFacts(run), time = exchangeTimestamp(fill?.time);
+  const terminal = isTerminalOrder(run.entryOrder?.status);
+  const updated = positive(run.entryOrder?.updateTime);
+  return basis.status === "CONFIRMED" && time !== null && time >= basis.startTime
+    && (!terminal || !updated || time <= updated);
+}
 
 export function ownedExitFills(run, result = run.result) {
   const ids = new Set([run.operatorCloseOrder?.orderId,

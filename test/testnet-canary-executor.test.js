@@ -2,13 +2,124 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { TestnetCanaryExecutor as ProductionExecutor } from "../src/execution/testnet-canary-executor.js";
 import { BinanceApiError, TestnetWriteDisabledError } from "../src/execution/binance-testnet-trading.js";
+import { projectExecutionRun } from "../src/execution/execution-run-projection.js";
+
+function team018ClockFixture(offset = -310) {
+  const local = 2_000_000, exchange = local + offset;
+  const run = {id:"clock-fixture",symbol:"BTCUSDT",createdAt:local-1000,status:"PROTECTION_INCOMPLETE",
+    plan:{direction:"LONG",entrySide:"BUY",exitSide:"SELL",quantity:2,clientIds:{entry:"clock-entry"}},
+    entryExecution:{submittedAt:local},entryFactVerification:{status:"ORDER_VERIFIED",ack:{orderId:"11"}},
+    entryOrder:{symbol:"BTCUSDT",clientOrderId:"clock-entry",orderId:"11",side:"BUY",status:"FILLED",executedQuantity:2,createdTime:exchange-10,updateTime:exchange},
+    protection:{stop:{actualOrderId:"12",actualQuantity:2}},result:null};
+  const rows=[{id:"1",orderId:"11",symbol:run.symbol,side:"BUY",quantity:2,price:10,quoteQuantity:20,commission:0.01,commissionAsset:"USDT",realizedPnl:0,time:exchange},
+    {id:"2",orderId:"12",symbol:run.symbol,side:"SELL",quantity:2,price:11,quoteQuantity:22,commission:0.01,commissionAsset:"USDT",realizedPnl:2,time:exchange+1000}];
+  const calls=[];
+  const client={async queryOrder(){return structuredClone(run.entryOrder)},async getExchangeTime(){return exchange+2000},
+    async listUserTrades(symbol,query){calls.push(query);return structuredClone(rows)},async listIncomeHistory(){return []},
+    async fetchAccountState(){return {environment:"TESTNET",authority:"BINANCE_TESTNET",positionMode:"ONE_WAY",positions:[],openOrders:[],openAlgoOrders:[]}}};
+  const store=new MemoryStore(null);store.runs.set(run.id,structuredClone(run));
+  return {run,rows,client,store,calls,executor:new ProductionExecutor({client,store,now:()=>local+2000})};
+}
+
+test("TEAM018同订单交易所时间早于本地提交仍完成成交及退出核验",async()=>{
+  for(const offset of [-310,-200_000,200_000]){
+    const {run,executor,client}=team018ClockFixture(offset);
+    const facts=await executor.collectRunTrades(run);
+    assert.equal(facts.exitFactsComplete,true,String(offset));assert.equal(facts.accountingComplete,true,String(offset));
+    await executor.observeEntryFillVerification(run);assert.equal(run.entryFactVerification.fills.status,"VERIFIED");
+    client.queryOrder=async()=>null;
+    const verified=await executor.verifyEntryFacts(run);assert.equal(verified.pending,false);assert.equal(run.entryFactVerification.status,"FILLS_VERIFIED");
+  }
+});
+
+test("TEAM018旧记录只含updateTime须同订单查询补齐，未知或错ID不伪造成交时间",async()=>{
+  for(const mode of ["valid","missing","wrongId","wrongClient","wrongSide","wrongSymbol","badTime"]){
+    const {run,executor,client,rows}=team018ClockFixture();const authoritative=structuredClone(run.entryOrder);
+    delete run.entryOrder.createdTime;
+    client.queryOrder=async()=>mode==="missing"?null:{...authoritative,
+      ...(mode==="wrongId"?{orderId:"old-order"}:{}),...(mode==="wrongClient"?{clientOrderId:"other"}:{}),
+      ...(mode==="wrongSide"?{side:"SELL"}:{}),...(mode==="wrongSymbol"?{symbol:"ETHUSDT"}:{}),...(mode==="badTime"?{createdTime:null}:{})};
+    const originalSubmit=run.entryExecution.submittedAt;
+    const facts=await executor.collectRunTrades(run);
+    assert.equal(facts.accountingComplete,mode==="valid",mode);
+    assert.equal(run.entryExecution.submittedAt,originalSubmit);
+    await executor.observeEntryFillVerification(run);
+    assert.equal(run.entryFactVerification.fills.status,mode==="valid"?"VERIFIED":"QUERY_UNAVAILABLE",mode);
+    assert.equal(rows.length,2);
+  }
+});
+
+test("TEAM018真实错误方向/旧成交/未来成交/冲突重复/缺页仍阻断，乱序部分成交去重且Funding界限不扩张",async()=>{
+  for(const mode of ["valid","wrongSide","foreignId","oldFill","futureFill","duplicateConflict","missingPage"]){
+    const {run,executor,client,rows,calls}=team018ClockFixture();const first=rows[0],exit=rows[1];
+    rows.splice(0,2,exit,{...first,id:"3",quantity:1,quoteQuantity:10,time:first.time-1},{...first,quantity:1,quoteQuantity:10});
+    rows.push({...rows[1]}); // identical overlap is deduplicated
+    if(mode==="wrongSide")rows[2].side="SELL";
+    if(mode==="foreignId")rows[2].orderId="foreign";
+    if(mode==="oldFill")rows[2].time=run.entryOrder.createdTime-1;
+    if(mode==="futureFill")rows[2].time=run.entryOrder.updateTime+1;
+    if(mode==="duplicateConflict")rows.push({...rows[1],price:12});
+    if(mode==="missingPage")client.listUserTrades=async()=>null;
+    const funding=[];client.listIncomeHistory=async(symbol,q)=>{funding.push(q);return [{transactionId:"f1",symbol,incomeType:"FUNDING_FEE",asset:"USDT",income:0.1,time:first.time},
+      {transactionId:"outside",symbol,incomeType:"FUNDING_FEE",asset:"USDT",income:999,time:run.entryOrder.createdTime}];};
+    const facts=await executor.collectRunTrades(run);
+    assert.equal(facts.accountingComplete,mode==="valid",mode);
+    if(mode==="valid"){
+      assert.equal(facts.trades.length,3);assert.equal(facts.fundingPnl,0.1);
+      assert.equal(funding[0].startTime,first.time-1);assert.equal(funding[0].endTime,exit.time);
+      assert.equal(calls[0].startTime,run.entryOrder.createdTime);
+    }
+  }
+});
+
+test("TEAM018新intent查回旧clientID订单必须阻断且不重复入场",async()=>{
+  for(const unknownSubmission of [false,true]){
+  const now=3_000_000,store=new MemoryStore(signalRecord(now)),client=new FakeTradingClient();
+  const executor=new TestnetCanaryExecutor({store,client,enabled:true,now:()=>now});
+  const prepared=await executor.prepare("new-intent");
+  client.order={symbol:prepared.run.symbol,side:prepared.run.plan.entrySide,clientOrderId:prepared.run.plan.clientIds.entry,
+    orderId:"9",status:"FILLED",executedQuantity:Number(prepared.run.plan.quantity),createdTime:now-100_000,updateTime:now-90_000};
+  if(unknownSubmission){let reads=0;const old=client.order;client.queryOrder=async()=>++reads===1?null:structuredClone(old);client.failEntryUnknown=true;}
+  const result=await executor.execute(prepared.run.id,prepared.confirmationCode);
+  assert.equal(result.status,"ENTRY_FACT_CONFLICT");assert.equal(client.calls.placeEntry,unknownSubmission?1:0);
+  assert.equal(client.calls.placeAlgo.length,0);
+  }
+});
+
+test("TEAM018跨周查询片段保留同订单归属且不重复成交",async()=>{
+  const {run,executor,client,rows}=team018ClockFixture();const week=7*24*60*60_000;
+  rows[1].time=rows[0].time+week+100;
+  client.getExchangeTime=async()=>rows[1].time+10;
+  const queries=[];client.listUserTrades=async(symbol,q)=>{queries.push(q);return structuredClone(rows.filter(t=>t.time>=q.startTime&&t.time<=q.endTime));};
+  const facts=await executor.collectRunTrades(run);
+  assert.equal(facts.accountingComplete,true);assert.equal(facts.trades.length,2);
+  assert.equal(queries.length,2);assert.equal(queries[0].endTime+1,queries[1].startTime);
+});
+
+test("TEAM018全部终态统一时间上界，EXPIRED_IN_MATCH合法partial保留且终态后成交拒绝",async()=>{
+  for(const status of ["FILLED","CANCELED","EXPIRED","EXPIRED_IN_MATCH","REJECTED"]){
+    for(const afterTerminal of [false,true]){
+      const {run,executor,rows}=team018ClockFixture();
+      run.entryOrder.status=status;run.plan.quantity=4; // confirmed partial quantity remains 2
+      rows[0].time=run.entryOrder.updateTime+(afterTerminal?1:-1);
+      const facts=await executor.collectRunTrades(run);
+      assert.equal(facts.exitFactsComplete,!afterTerminal,status);
+      assert.equal(facts.accountingComplete,!afterTerminal,status);
+      await executor.observeEntryFillVerification(run,facts);
+      assert.equal(run.entryFactVerification.fills.status,afterTerminal?"CONFLICT":"VERIFIED",status);
+    }
+  }
+});
 
 // The real client stamps each newly fetched response with its injected clock.
 // Mirror that behavior for fake snapshots without altering executor logic.
 class TestnetCanaryExecutor extends ProductionExecutor {
   constructor(options) {
     super(options);
-    if (options.client instanceof FakeTradingClient) options.client.snapshotNow = () => this.now();
+    if (options.client instanceof FakeTradingClient) {
+      options.client.snapshotNow = () => this.now();
+      options.client.orderCreatedTime = this.now();
+    }
   }
 }
 
@@ -133,8 +244,10 @@ class FakeTradingClient {
   }
   async testLimitOrderPermission() { this.calls.permissionTests = (this.calls.permissionTests ?? 0) + 1; return { accepted: true }; }
   async queryOrder(_symbol, clientOrderId) {
-    return structuredClone(this.orders.get(clientOrderId) ?? (clientOrderId?.includes("-close") ? (this.closeOrder ?? null) : this.order));
+    const order = this.orders.get(clientOrderId) ?? (clientOrderId?.includes("-close") ? (this.closeOrder ?? null) : this.order);
+    return order ? structuredClone({createdTime:this.orderCreatedTime,updateTime:this.orderCreatedTime,...order}) : null;
   }
+  async getExchangeTime() { return this.snapshotNow(); }
   async placeLimitOrder({ symbol, side, quantity, price, clientOrderId, timeInForce = "IOC" }) {
     this.calls.placeEntry += 1;
     this.calls.lastEntryRequest = { symbol, side, quantity, price, clientOrderId, timeInForce };
@@ -142,7 +255,7 @@ class FakeTradingClient {
     this.order = {
       symbol, side, originalQuantity: Number(quantity), executedQuantity: this.fillEntryImmediately ? Number(quantity) : 0,
       price: Number(price), averagePrice: this.fillEntryImmediately ? Number(price) : 0,
-      clientOrderId, orderId: "1", status: this.fillEntryImmediately ? "FILLED" : "NEW", timeInForce,
+      clientOrderId, orderId: "1", status: this.fillEntryImmediately ? "FILLED" : "NEW", timeInForce, createdTime:this.orderCreatedTime, updateTime:this.orderCreatedTime,
     };
     if (this.fillEntryImmediately) this.account.positions = [{ symbol, quantity: Number(quantity), positionSide: "BOTH" }];
     return structuredClone(this.order);
@@ -229,7 +342,7 @@ class FakeTradingClient {
     const entrySide = this.order?.side ?? 'BUY';
     const exitSide = entrySide === 'BUY' ? 'SELL' : 'BUY';
     const quantity = Number(this.order?.executedQuantity ?? 0);
-    const rows = quantity > 0 ? [{ id: "1", orderId: this.order?.orderId, symbol, side: entrySide, quantity, price: Number(this.order.averagePrice) || 85000, commission: 0.04, commissionAsset: 'USDT', realizedPnl: 0, time: startTime + 60_000 }] : [];
+    const rows = quantity > 0 ? [{ id: "1", orderId: this.order?.orderId, symbol, side: entrySide, quantity, price: Number(this.order.averagePrice) || 85000, commission: 0.04, commissionAsset: 'USDT', realizedPnl: 0, time: this.order?.createdTime ?? this.orderCreatedTime }] : [];
     if (this.closeOrder) rows.push({ id: "2", orderId: this.closeOrder.orderId, symbol, side: exitSide, quantity: Number(this.closeOrder.executedQuantity), price: 85000, commission: 0.04, commissionAsset: 'USDT', realizedPnl: -0.02, time: endTime });
     for (const algo of this.algos.values()) {
       if (this.hideAlgoTrades) continue;
@@ -585,7 +698,8 @@ async function tpRecoveryFixture() {
   const prepared = await executor.prepare("btc-signal-exec");
   const run = prepared.run;
   run.status = "PROTECTION_PENDING";
-  run.entryOrder = { orderId: "9006", executedQuantity: 0.0012, status: "FILLED", updateTime: time.now };
+  run.entryOrder = { symbol:run.symbol,side:run.plan.entrySide,clientOrderId:run.plan.clientIds.entry,
+    orderId: "9006", executedQuantity: 0.0012, status: "FILLED", createdTime:time.now, updateTime: time.now };
   client.account.positions = [{ symbol: "BTCUSDT", quantity: 0.0012, positionSide: "BOTH" }];
   return { time, store, client, executor, run };
 }
@@ -716,7 +830,7 @@ test("恢复ID的成交和旧订单均归属本run，无仓时只清理不恢复
   const protection = await executor.queryKnownProtection(run);
   run.protection={...run.protection,...protection};
   client.listUserTrades=async()=>[
-    {id:"101",orderId:"9006",symbol:'BTCUSDT',quantity:0.0012,side:"BUY",price:85000,commission:0,commissionAsset:'USDT',realizedPnl:0,time:time.now},
+    {id:"101",orderId:"9006",symbol:'BTCUSDT',quantity:0.0012,side:"BUY",price:85000,commission:0,commissionAsset:'USDT',realizedPnl:0,time:run.entryOrder.createdTime},
     {id:"102",orderId:"9004",symbol:'BTCUSDT',quantity:0.0012,side:"SELL",price:89000,commission:0,commissionAsset:'USDT',realizedPnl:4.8,time:time.now},
     {id:"foreign",orderId:"external",commission:999,realizedPnl:999},
   ];
@@ -1709,6 +1823,19 @@ async function team014ClosedFixture() {
   await context.store.saveExecutionRun(run);
   return context;
 }
+
+test("TEAM018真实退出恢复先刷新旧CONFLICT成交核验再结算，不二次请求成交",async()=>{
+  const {run,executor,client,store,time}=await team014ClosedFixture();
+  run.entryExecution={submittedAt:time.now+310};
+  run.entryFactVerification={status:"ORDER_VERIFIED",fills:{status:"CONFLICT",quantity:null,count:1},history:[]};
+  let queries=0;const read=client.listUserTrades.bind(client);client.listUserTrades=async(...args)=>{queries++;return read(...args);};
+  await executor.reconcileProtected(run);
+  assert.equal(run.status,"CLOSED");assert.equal(run.entryFactVerification.fills.status,"VERIFIED");
+  assert.equal(queries,1);
+  const projected=projectExecutionRun(run);assert.equal(projected.entryFactStatus,"CONFIRMED");assert.ok(Number.isFinite(projected.netR));
+  const checked=store.audit.findIndex(x=>x.eventType==="ENTRY_FILLS_CHECKED"&&x.payload.status==="VERIFIED");
+  const closed=store.audit.findIndex(x=>x.eventType==="CANARY_CLOSED");assert.ok(checked>=0&&checked<closed);
+});
 
 test("TEAM014完整退出事实仍需独立新鲜零仓：有仓/陈旧/未来/缺项/冲突/查询失败均保留保护",async()=>{
   for(const mode of ["position","stale","future","missingTimestamp","missingPositions","missingOrders","wrongAuthority","duplicatePosition","failure"]) {

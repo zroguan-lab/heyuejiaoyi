@@ -8,11 +8,11 @@ import { createHash } from 'node:crypto';
 const NOW = 1_800_000_000_000;
 const fill = (id, orderId, side, quantity = 1, overrides = {}) => ({ id: String(id), orderId: String(orderId), symbol: 'BTCUSDT', side, quantity, price: 100, commission: 0.01, commissionAsset: 'USDT', realizedPnl: 0, time: NOW - 1000, ...overrides });
 function runFixture() {
-  return { id: 'team-011-offline', symbol: 'BTCUSDT', direction: 'LONG', createdAt: NOW - 10000, status: 'ACCOUNTING_PENDING', entryOrder: { orderId: '10', executedQuantity: 1, side: 'BUY', status: 'FILLED' }, protection: { stop: { actualOrderId: '20', status: 'FINISHED' }, takeProfit1: { actualOrderId: '0', status: 'CANCELED' } }, plan: { direction: 'LONG', entrySide: 'BUY', exitSide: 'SELL', prices: { entry: 100, stopLoss: 90 }, orderReasons: {}, clientIds: { entry: 'entry', stop: 'stop' }, order: { quantity: 1, side: 'BUY' } } };
+  return { id: 'team-011-offline', symbol: 'BTCUSDT', direction: 'LONG', createdAt: NOW - 10000, status: 'ACCOUNTING_PENDING', entryOrder: { symbol:'BTCUSDT',clientOrderId:'entry',createdTime:NOW-10000,updateTime:NOW-1000,orderId: '10', executedQuantity: 1, side: 'BUY', status: 'FILLED' }, protection: { stop: { actualOrderId: '20', status: 'FINISHED' }, takeProfit1: { actualOrderId: '0', status: 'CANCELED' } }, plan: { direction: 'LONG', entrySide: 'BUY', exitSide: 'SELL', prices: { entry: 100, stopLoss: 90 }, orderReasons: {}, clientIds: { entry: 'entry', stop: 'stop' }, order: { quantity: 1, side: 'BUY' } } };
 }
 function harness(overrides = {}) {
   const audit = [];
-  const client = { listUserTrades: async () => [fill(1, 10, 'BUY'), fill(2, 20, 'SELL')], listIncomeHistory: async () => [], ...overrides };
+  const client = { getExchangeTime:async()=>NOW,listUserTrades: async () => [fill(1, 10, 'BUY'), fill(2, 20, 'SELL')], listIncomeHistory: async () => [], ...overrides };
   const store = { appendExecutionAudit: async (...args) => audit.push(args), saveExecutionRun: async value => value, getMetadata: async () => null };
   return { executor: new TestnetCanaryExecutor({ client, store, now: () => NOW }), client, audit };
 }

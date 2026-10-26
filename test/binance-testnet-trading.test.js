@@ -6,6 +6,19 @@ import {
   TestnetWriteDisabledError,
 } from "../src/execution/binance-testnet-trading.js";
 
+test("TEAM018交易所创建时间与更新时间分别保留，不由updateTime或createTime猜创建时间",async()=>{
+  const client=new BinanceTestnetTradingClient({baseUrl:"https://demo-fapi.binance.com",apiKey:"fixture",apiSecret:"fixture",now:()=>20_000});
+  for(const payload of [{time:10000,updateTime:11000},{updateTime:11000},{createTime:10000,updateTime:11000},
+    {time:10000,createTime:9999,updateTime:11000},{time:true,updateTime:11000}]){
+    client.signedRequest=async()=>({symbol:"BTCUSDT",side:"BUY",orderId:"1",clientOrderId:"fixture-entry",...payload});
+    const order=await client.queryOrder("BTCUSDT","fixture-entry");
+    assert.equal(order.createdTime,payload.time===10000&&payload.createTime===undefined?10000:null);
+    assert.equal(order.updateTime,11000);
+  }
+  client.ensureTimeSync=async()=>{client.serverOffsetMs=-310;};
+  assert.equal(await client.getExchangeTime(),19690);
+});
+
 test("交易客户端只接受 Demo 域名、BTC 白名单且默认拒绝所有写入", async () => {
   assert.throws(() => new BinanceTestnetTradingClient({
     baseUrl: "https://fapi.binance.com", apiKey: "key", apiSecret: "secret",
