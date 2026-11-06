@@ -1,4 +1,50 @@
 # 团队任务
+## TEAM-029 单变量策略候选与可靠性上线
+
+状态：B1 OFFLINE_VERIFIED / NOT_DEPLOYED，整体POLICY_SELECTION_PENDING（2026-11-06 18:50）。用户明确优化下一版查BUG后上线；策略选项待回答，不默认、不叠加。TEAM024 manifest143已核验复制独立候选；执行专家仅候选10文件移植TEAM025/026安全差异，HTTP未夹带因子，旧V243回归保留。执行与总控各445/445，独立QA定向152/152、全量445/445及追加否决/并发/门控夹具通过，候选143恰好10差异/活动143无漂移；首轮环回EACCES保留。根已有V244 exact BP+VC草稿不等于活动版本，策略专家复核固定148中命中23而非草稿19，并复现反事实混组及矛盾eligible信任缺口，待确认策略后单独列文件合同。未改策略/版本纪元/活动库/服务或订单，不人工交易/清锁/强扫/push，三专家结束回合待命。合同tasks/TEAM-029.md；总体尚未策略验收/上线。
+
+TEAM-029发布追加（2026-11-06晚间）：用户已另行授权先提交GitHub，按tasks/TEAM-029.md仅独立分支codex/team-029-reliability归档B1十项可靠性差异及汇总/脱敏清单，独立QA发布树验收后推送。不合并main、不夹带根V244/因子、库或凭据，不代表上线；策略选择仍待定。
+
+## TEAM-028 148笔V2.4.3订单盈利与亏损归因
+
+状态：REPORT_COMPLETE / INDEPENDENT_QA_PASS_LIMITED（2026-11-06）。用户要求已有订单赚钱/亏钱原因总结；固定截止北京时间17:04:11.339、同纪元正式148笔，净-32.46360330U、56盈92亏、PF0.729976、平均实际NetR-0.185674。总控独占只读统计脚本、合同、总结和逐笔附录；策略研究与独立QA两实例均只读实际交付，正式148的505fills/50Funding、快照与摘要独立一致。最终148逐行/47组合机器复核0差异；事后来源/量能/评分分组只形成假设，因果与盈利仍PARTIAL，不当上线验收。浮点73/34/7按独立反例修为72/33/6，BE角色归属、RV排名幅度定义、SHORT非硬门槛及网络反事实措辞均修正并保留反方。未调策略、操作库或账户、重启/解锁/回测/push，专家结束待命。合同tasks/TEAM-028.md，报告acceptance/2026-11-06-TEAM-028-profit-loss-summary.md，全部148索引2026-11-06-TEAM-028-trades.md。
+
+## TEAM-027 DUSK退出归属与原版本恢复
+
+状态：RESTORED / INDEPENDENT_QA_PASS_LIMITED / RUNTIME_PARTIAL（2026-11-02 23:21）。用户明确批准安全前提后备份/短暂停唯一实例/处理单记录/同原包恢复。10个签名GET核清DUSK外部BUY平空305404982/1117及8fills/3Funding；完整双备份与独立19/19/事务反例通过后，停旧23736，仅CAS导入退出身份/来源并人工退出单列，原plan/hash/status/result不造写。审计307927/307928保留完整原记录，原包自然307932结算CLOSED/完整账务净+3.18981497U，未删除交易或原审计。23:15:44同TEAM024单次启动8332/同锁监听；独立QA4→6与总控4→12/同步推进、hold/emergency=false/readiness/effective=true，自然GRIFFAIN空8539 OPEN_PROTECTED/SL双TP均NEW。运行专家因首GET失败和字段提取误差仅PARTIAL，不掩盖；长期网络/自然新仓退出闭环未知。根159/活动143/原569/纪元保持，未加载TEAM025/026/因子、未改策略/配置、不人工交易/强扫/clear/push。本次不是未来自动恢复许可。合同tasks/TEAM-027.md；报告acceptance/2026-11-02-TEAM-027-report.md；runtime marker TEAM027，源码marker TEAM024。专家结束待命。
+
+## TEAM-026 执行可靠性专项
+
+状态：OFFLINE_VERIFIED / NOT_DEPLOYED（2026-11-01 20:29），总体线上稳定性NOT_ACCEPTED。用户优先稳定性并批准离线调度异常边界，原执行专家独占8文件；第二版独立558/558、定向132/132，总控558/558。修复批次旧写覆盖终态、FINISHED后弱非零NEW误放行、严格系统退出证据贯通及可信时间上界、调度异常故障门控/恢复和并发停止广播；第一版future证据FAIL、中途死锁及其他失败保留。根其余151/活动143/旧569/原纪元保持；当前TEAM024未改，未部署/重启/解锁/签名/交易/回填/push。DUSK外部退出未认领，20:23现场扫描推进但hold仍在/effective=false。后续退出取证及上线权限须另确认，不以离线PASS宣称恢复交易或网络根治。合同tasks/TEAM-026.md；报告acceptance/2026-11-01-TEAM-026-report.md。专家本回合结束待命。
+
+## TEAM-025 DUSK原SL提交未知后的恢复分类
+
+状态：OFFLINE_VERIFIED / NOT_DEPLOYED（2026-11-01 00:04）。用户批准非策略修复、现仓自行Demo处置。原执行专家独占executor/adapter及对应test四文件；第一版独立FAIL后修正，独立定向127/127、全量541/541，总控541/541。原ID负事实与空/无效/网络未知分层，独立账户归属核验后才恢复既有缺SL应急；缓存成交证据跨轮保持，冲突NEW不误清除。根155/活动143及旧569/原纪元保持；活动TEAM024未加载修复，不部署/解锁/签名/交易/回填/push。DUSK退出归属仍未闭环，23:59投影零账户但hold/effectivefalse，不冒充恢复。合同tasks/TEAM-025.md；报告acceptance/2026-10-31-TEAM-025-report.md。
+
+## TEAM-024 已执行止损恢复误判的离线修复
+状态：DEPLOYED / INDEPENDENT_QA_AND_RUNTIME_PASS_LIMITED（2026-10-30 17:47）。离线根535/535、新干净包独立422/422；用户另行批准后双备份/新鲜零账户/旧账与纪元门槛通过，既有CLI安全clear、17:42:42单次启动新TEAM024 release唯一23736，原cwd/7897代理保持。首次OLD_PID_NOT_EXITED拒绝保留，稍后证实全退出后经独立QA审显式离线续行，未重跑stop或放宽门槛。独立运行scan0→1、QA1→2/同步推进通过，总控最终17:46:42 connected/readiness/effective正常、无emergency/hold、零仓零单/WATCHING。旧560/纪元不变，原TEAM020源保留；根因子未加载、策略未改、不人工交易/强扫/回填/push。自然FINISHED/TP1-BE、新交易完整账务、长期网络稳定和盈利仍未验证。合同tasks/TEAM-024.md；报告acceptance/2026-10-30-TEAM-024-report.md；当前marker TEAM024。
+
+## TEAM-023 低成交量退出失败后的安全恢复
+状态：RESTORED / INDEPENDENT_RUNTIME_PASS_LIMITED / INTERMITTENT_HTTP_TIMEOUT_REMAINS。2026-10-30用户要求“为什么停止了，马上恢复”。原TAUSDT低成交退出流程超时触发粘滞紧急停止，后续SL实际退出结算；新鲜真实零仓零单、在线/停机完整备份后，总控原CLI安全clear，02:26:29原TEAM020 release/cwd/纪元/7897代理单次启动唯一49660。旧549及纪元保持，独立QA旧账/源码/实际安全入口PASS，独立运行02:30:15—02:31:28 scan7→9/同步推进/connected/readiness通过、零仓零单/无hold/emergency；但QA两次及最终总控health仍15秒超时，不宣称接口或网络根治。首次停旧退出闸门拒绝保留，证明全退出后显式离线续行且再审，不归因未复现的Count猜测。无业务源码/策略/仓位/配置变更，无人工交易/强扫/回填/因子加载/push，未来自动恢复未授权。合同tasks/TEAM-023.md；报告acceptance/2026-10-30-TEAM-023-report.md；runtime marker TEAM023。
+
+## TEAM-022 原发布包退出诊断与受控恢复
+状态：RESTORED / INDEPENDENT_RUNTIME_AND_QA_PASS_LIMITED。2026-10-28用户批准后，新鲜只读账户/备份/单实例闸门通过，22:28:45仅启动一次同TEAM-020 release/cwd/参数/原纪元/7897进程代理，原50508已退出、旧锁归档，新唯一42060。543旧终态及纪元原文不变、备份完整，独立QA38/38及旧账/实际命令/宿主后验PASS_LIMITED，独立运行scan3→5与同步推进；22:33总控scan10/connected/readiness通过、0仓零单/无hold/emergency、WATCHING。原退出触发UNKNOWN，网络未声明根治；首轮QA FAIL、备份名单误分类、日期时区误拒保留并纠正，不放宽新鲜度。无业务源码/策略/配置或原账变化，无人工交易/解锁/强扫/因子接入/push，不新增托管/自动重启。合同tasks/TEAM-022.md；报告acceptance/2026-10-28-TEAM-022-report.md。专家本回合结束待命。
+
+## TEAM-021 长时间无单与代理通道受控加载
+状态：DEPLOYED_NETWORK_ROUTE / INDEPENDENT_RUNTIME_PASS_WITH_WARNINGS / INTERMITTENT_NETWORK_REMAINS。10/27 14:43用户批准后同TEAM020源码仅显式进程7897代理覆盖，旧456→唯一50508；在线/确认停机备份完整、533旧终态与纪元不变，QA核账/指纹/实施命令证据通过、独立运行scan1→2及同步/readiness推进，总控14:46最终scan5/账户连接/无锁/零仓零单。新日志仍有账户超时后恢复，未根治所有网络问题。固定02:12—14:29窗口182候选0selected，不是182条可下单；独立当前712历史selected也无合格遗漏，未发现代码反例，不改策略/阈值/仓位/版本/纪元或源码。保留失败检查，未人工交易/解锁/强扫/回填/push，因子保持离线。合同tasks/TEAM-021.md；报告acceptance/2026-10-27-TEAM-021-report.md。
+
+## TEAM-020 长时间无新单只读诊断
+状态：DEPLOYED / AUTO_EXECUTION_WATCHING / INDEPENDENT_RUNTIME_PASS_LIMITED。10/27 01:21唯一新PID456加载HEAD66f2541加本次executor修复（SHA A5271CD0…），独立工作区529/529/干净包416/416。原18988退出、双备份完整、530旧终态/纪元保持，独立scan1→3和同步推进/connected/0仓零单/readiness可准备/无锁。活动源码quant-team/backups/TEAM-020-20261027/release，不得当普通备份删或直接启动dirty根源夹带因子。未改策略/成本/仓位/版本/纪元，无人工交易/解锁/强扫/回填或push；历史BONK账务与自然故障恢复前向验证仍待。合同tasks/TEAM-020.md；报告acceptance/2026-10-27-TEAM-020-report.md。
+
+## TEAM-019 Factor Intelligence V1（研究/Shadow）
+状态：OFFLINE_CHECKPOINT / PHASE6_GOVERNANCE_PASS_LIMITED / NOT_COMPLETE / DEMO_UNCHANGED。用户最新明确“继续离线因子开发，当前 Demo 保持不动”。候选档案/计划/完整历史重放/不可变持久化/CAS审计与阻断晋级已通过独立因子113/113、全量527/527；总控定向54/54及全量527/527。phase4自动调权/数字提案、phase6可信runner/实际Backtest/OOS/Shadow及phase7最终验收仍未完成。不创建实际用户候选/权重，不访问或迁移本轮活动库/服务/账户，不自行部署/恢复/交易，策略与纪元不改，未push。18:52运行恢复仅历史快照，本批没有重核当前运行。合同tasks/TEAM-019.md；报告acceptance/2026-10-26-TEAM-019-report.md。
+
+## TEAM-018 当前运行异常与非策略修复
+状态：DEPLOYED / AUTO_EXECUTION_RESTORED / INDEPENDENT_PASS_LIMITED。2026-10-26非策略修复66f2541，独立154/154、全量414/414；首轮终态漏检FAIL保留并关闭。用户追加批准后13:22受控备份切换54596→18988，13:26扫描7/同步推进、账户连接与BLUR保护完整、hold/emergency=false、effective=true。DYM/CATI/Q自动完成账务，520旧终态及纪元原文不变；NetR为只读投影，原字段null保持。策略/配置不改、无人工交易或主动解锁、未push。残余上游超时与自然全场景仍须观察。合同tasks/TEAM-018.md；报告acceptance/2026-10-26-TEAM-018-report.md。
+
+## TEAM-017 自然退出闭环前向验收
+状态：ACTIVE_READONLY_FORWARD_ACCEPTANCE。用户同意先自然TP1→BE→最终账务验收，再恢复单变量研究；不制造订单或放宽门槛，不以止损分支冒充TP1路径。执行/QA/运行专家只读交叉核验，总控留证并定时跟进。策略/运行/原始账不改；通过后仅形成单变量提案，交易规则变化另需批准。合同tasks/TEAM-017.md。
+
 ## TEAM-016 执行生命周期与恢复入口一致性
 状态：COMPLETE / DEPLOYED / PASS_WITH_WARNINGS。2026-10-25修复3a6b347，执行及独立QA113/113、404/404，总控404/404。受控备份停旧11456、唯一新监听/锁54596；独立scan1→2与同步推进，PHA保护完整、readiness/归属通过、停止/安全hold false、自动执行可用。518旧终态及原纪元不变；上游超时与未发生的自然TP1/BE场景仍列限制，未push。冻结策略参数不是长期目标；不混入MFE或盈利因子变化。合同tasks/TEAM-016.md；报告acceptance/2026-10-25-TEAM-016-report.md。
 

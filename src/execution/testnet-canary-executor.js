@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { executionFillFacts, executionExcursionFacts, ownedExitFills, observeOwnedExitFills, entryOrderTimeFacts, entryFillTimeMatches, isTerminalOrder } from "./execution-fill-facts.js";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { executionFillFacts, executionExcursionFacts, ownedExitFills, observeOwnedExitFills, entryOrderTimeFacts, entryFillTimeMatches, isTerminalOrder, verifiedProtectionExitOrders } from "./execution-fill-facts.js";
 import { acquireExecutionProcessLock } from "./entry-fact-process-lock.js";
 import { EventEmitter } from "node:events";
 import { ACTIVE_ALGO_STATUSES, hasManagedTp1Lifecycle, effectivePositionStop, protectionOrderKnown, accountProtectionFactsKnown, blocksNewExecutionEntry } from "./protection-state.js";
@@ -41,6 +42,23 @@ import {
 } from "../domain/trade-excursion.js";
 
 const STORE_RUN_LOCKS = new WeakMap();
+const RUN_OPERATION_CONTEXT = new AsyncLocalStorage();
+const RECONCILE_BATCH_CONTEXT = new AsyncLocalStorage();
+
+function noteIncompleteBatch() {
+  const batch = RECONCILE_BATCH_CONTEXT.getStore();
+  if (batch) batch.complete = false;
+}
+
+function storeRunLocks(store) {
+  let locks = STORE_RUN_LOCKS.get(store);
+  if (!locks) {
+    locks = { reconciling: new Set(), executing: new Set(), tails: new Map(), owners: new Map(),
+      runtime: { known: true, active: false, generation: 0, fault: null, lastSuccessfulAt: null } };
+    STORE_RUN_LOCKS.set(store, locks);
+  }
+  return locks;
+}
 
 const TERMINAL_STATUSES = new Set(["CLOSED", "CANCELED", "REJECTED", "FAILED"]);
 const ENTRY_STATUSES = new Set(["ENTRY_SUBMITTING", "SUBMISSION_UNKNOWN", "ENTRY_PENDING", "PARTIALLY_FILLED", "ENTRY_FACT_PENDING", "ENTRY_FACT_CONFLICT"]);
@@ -84,6 +102,66 @@ function protectionQueryUnknown(message) {
   const error = new Error(message);
   error.protectionUnknown = true;
   return error;
+}
+
+// Shared unchanged freshness contract from independent exit-cleanup verification.
+function independentAccountFresh(account, previous, requestedAt, receivedAt) {
+  const syncedAt = finiteValue(account?.syncedAt);
+  return accountProtectionFactsKnown(account) && account !== previous
+    && syncedAt !== null && syncedAt >= requestedAt && syncedAt <= receivedAt
+    && receivedAt - syncedAt <= 30_000;
+}
+
+function rememberStopExecution(run, role, clientAlgoId, order, observedAt) {
+  const previous = run.protection.observations?.[role];
+  const scope = { runId: run.id, role, clientAlgoId, symbol: run.symbol, side: run.plan.exitSide };
+  const saved = previous?.executionEvidence;
+  if (saved && Object.entries(scope).every(([key, value]) => saved[key] === value)) {
+    if (saved.identityVerified && protectionOrderKnown(order, run, role) && !stopExecutionConflict(saved, order)
+      && Number(order.actualQuantity) >= Number(saved.actualQuantity)) {
+      return { ...saved, status: order.status, actualQuantity: order.actualQuantity, actualOrderId: order.actualOrderId ?? saved.actualOrderId,
+        updateTime: order.updateTime ?? saved.updateTime };
+    }
+    return saved;
+  }
+  const cached = run.protection[role];
+  const executed = value => Boolean(value?.actualOrderId) || Number(value?.actualQuantity) > 0 || value?.status === "FINISHED";
+  const source = executed(cached) ? cached : executed(order) ? order : null;
+  if (!source && !(previous?.executionMayHaveOccurred && previous.clientAlgoId === clientAlgoId)) return null;
+  return { ...scope, observedAt, status: source?.status ?? null,
+    actualOrderId: source?.actualOrderId ?? null, actualQuantity: source?.actualQuantity ?? null,
+    updateTime: source?.updateTime ?? null, type: source?.type ?? null,
+    sourceSymbol: source?.symbol ?? null, sourceSide: source?.side ?? null, sourcePositionSide: source?.positionSide ?? null,
+    sourceClientAlgoId: source?.clientAlgoId ?? null, identityVerified: protectionOrderKnown(source, run, role) };
+}
+
+function stopExecutionConflict(evidence, order) {
+  if (!evidence || !order) return false;
+  const oldQuantity = finiteValue(evidence.actualQuantity), nextQuantity = finiteValue(order.actualQuantity);
+  return evidence.status === "FINISHED" && order.status !== "FINISHED"
+    || oldQuantity > 0 && (nextQuantity === null || nextQuantity < oldQuantity && !quantitiesEqual(nextQuantity, oldQuantity))
+    || Boolean(evidence.actualOrderId) && String(order.actualOrderId ?? "") !== String(evidence.actualOrderId)
+    || finiteValue(evidence.updateTime) > 0 && finiteValue(order.updateTime) !== null
+      && Number(order.updateTime) < Number(evidence.updateTime);
+}
+
+// FINISHED is an execution observation, never active protection or proof of a
+// flat account. Only a complete, owned stop observation can await settlement;
+// incomplete facts remain blocked and a confirmed partial exit stays unsafe.
+function finishedStopObservation(run, role, order, position) {
+  if (!["stop", "breakEvenStop"].includes(role) || order?.status !== "FINISHED") return null;
+  if (!protectionOrderKnown(order, run, role)) return "IDENTITY_UNCONFIRMED";
+  const signed=finiteValue(position?.quantity ?? position?.positionAmt);
+  if (signed===null || signed===0 || (signed>0?"LONG":"SHORT")!==run.plan.direction
+    || (position?.symbol && position.symbol!==run.symbol)) return "POSITION_UNCONFIRMED";
+  const filled=finiteValue(order.actualQuantity),updated=finiteValue(order.updateTime),entry=finiteValue(run.entryOrder?.executedQuantity);
+  if (!(filled>0) || !(updated>0) || !validOrderId(order.actualOrderId) || !(entry>0)) return "EXECUTION_FACTS_UNCONFIRMED";
+  const tp1=run.protection?.takeProfit1;
+  const tp1Quantity=protectionOrderKnown(tp1,run,"takeProfit1") ? finiteValue(tp1.actualQuantity) ?? 0 : 0;
+  if (tp1Quantity<0 || tp1Quantity>entry) return "EXECUTION_QUANTITY_CONFLICT";
+  const expected=Math.max(Math.abs(signed),entry-tp1Quantity);
+  if (filled>expected && !quantitiesEqual(filled,expected)) return "EXECUTION_QUANTITY_CONFLICT";
+  return quantitiesEqual(filled,expected) ? "EXIT_SETTLEMENT_UNCONFIRMED" : "PARTIAL_EXIT_WITHOUT_STOP";
 }
 
 function fullyFilledClosingProtection(protection, position) {
@@ -342,8 +420,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
       throw new TypeError("pullbackEntryTtlMs 必须是 30 秒到 15 分钟之间的毫秒数");
     }
     this.timer = null;
-    let locks = STORE_RUN_LOCKS.get(store);
-    if (!locks) { locks = { reconciling: new Set(), executing: new Set() }; STORE_RUN_LOCKS.set(store, locks); }
+    const locks = storeRunLocks(store);
     this.reconciling = locks.reconciling;
     this.executing = locks.executing;
     this.lastReconcileAt = null;
@@ -354,6 +431,79 @@ export class TestnetCanaryExecutor extends EventEmitter {
     assertExecutionSymbol(symbol);
     if (!this.allowedSymbols.has(symbol)) throw new Error(`执行器拒绝非白名单标的: ${symbol}`);
     return symbol;
+  }
+
+  runtimeStatus() {
+    return structuredClone(storeRunLocks(this.store).runtime);
+  }
+
+  assertRuntimeReady() {
+    if (storeRunLocks(this.store).runtime.active) throw new Error("执行对账运行故障尚未通过完整新对账，禁止新入场");
+  }
+
+  recordRuntimeFault(stage) {
+    const runtime = storeRunLocks(this.store).runtime;
+    runtime.active = true;
+    runtime.generation += 1;
+    // Deliberately do not retain arbitrary exception text, request URLs or data.
+    runtime.fault = { code: "RECONCILIATION_FAILED", stage, at: this.now(), generation: runtime.generation };
+    this.lastReconcileError = { ...runtime.fault, message: stage === "ACCOUNT_OVERVIEW"
+      ? "账户批量对账字段未确认或查询失败" : `执行对账运行故障: ${stage}` };
+    try { this.logger.error(`[execution] ${this.lastReconcileError.message}`); } catch { /* State remains blocked if the logger fails. */ }
+  }
+
+  async withRunOwnership(runId, action) {
+    const locks = storeRunLocks(this.store), context = RUN_OPERATION_CONTEXT.getStore();
+    if (context?.store === this.store && context.runId === runId && locks.owners.get(runId) === context.token) {
+      return await action();
+    }
+    if (context?.store === this.store && locks.owners.get(context.runId) === context.token) {
+      throw new Error("禁止持有一笔执行所有权时等待另一笔；跨笔工作必须在释放后执行");
+    }
+    const previous = locks.tails.get(runId) ?? Promise.resolve();
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    locks.tails.set(runId, gate);
+    await previous;
+    const token = Symbol(runId);
+    const afterRelease = [];
+    locks.owners.set(runId, token);
+    try { return await RUN_OPERATION_CONTEXT.run({ store: this.store, runId, token, afterRelease }, action); }
+    finally {
+      locks.owners.delete(runId);
+      if (locks.tails.get(runId) === gate) locks.tails.delete(runId);
+      release();
+      // Never await another run while this run is owned, including broadcasts.
+      for (const work of afterRelease) await work();
+    }
+  }
+
+  async withRunObject(run, action) {
+    const locks = storeRunLocks(this.store), context = RUN_OPERATION_CONTEXT.getStore();
+    if (context?.store === this.store && context.runId === run.id && locks.owners.get(run.id) === context.token) {
+      return await action(run);
+    }
+    const queued = locks.tails.has(run.id);
+    return await this.withRunOwnership(run.id, async () => {
+      const canRead = typeof this.store.getExecutionRun === "function";
+      if (queued && !canRead) throw new Error("Queued run operation requires authoritative store reread");
+      const latest = canRead ? await this.store.getExecutionRun(run.id) : null;
+      if (latest && (queued || TERMINAL_STATUSES.has(latest.status))) {
+        for (const key of Object.keys(run)) delete run[key];
+        Object.assign(run, latest);
+      }
+      if (TERMINAL_STATUSES.has(run.status)) return run;
+      if (queued && latest) {
+        // The caller's account/quantity arguments preceded another operation.
+        // Re-enter normal reconciliation with fresh inputs rather than replaying
+        // an old protection/hold command against the new stored state.
+        const refreshed = await this.reconcile(run.id);
+        for (const key of Object.keys(run)) delete run[key];
+        Object.assign(run, refreshed);
+        return run;
+      }
+      return await action(run);
+    });
   }
 
   allowSymbols(symbols = []) {
@@ -415,6 +565,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async prepare(signalId, { strategySource = this.strategySource } = {}) {
+    this.assertRuntimeReady();
     const resolvedStrategySource = assertExecutionStrategySource(strategySource);
     if (resolvedStrategySource !== this.strategySource) throw new Error("执行请求的策略源与执行器配置不一致");
     if (await this.isEmergencyStopped()) throw new Error("执行紧急停止已启用，禁止准备新订单");
@@ -457,6 +608,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
       executionSource: resolvedStrategySource,
       now: this.now(),
     });
+    this.assertRuntimeReady();
     const result = await this.store.createExecutionRun(prepared.run);
     if (!result.created) return { run: result.run, confirmationCode: null, reused: true };
     await this.store.appendExecutionAudit(prepared.run.id, "CANARY_PREPARED", {
@@ -472,6 +624,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async prepareOperatorCanary(direction = "LONG") {
+    this.assertRuntimeReady();
     if (await this.isEmergencyStopped()) throw new Error("执行紧急停止已启用，禁止准备人工金丝雀");
     for (const activeRun of await this.store.listActiveExecutionRuns()) {
       if (activeRun.status === "PREPARED" && activeRun.plan?.expiresAt <= this.now()) await this.reconcile(activeRun.id);
@@ -507,6 +660,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
       direction: prepared.run.plan.direction,
       createdAt: prepared.run.createdAt,
     });
+    this.assertRuntimeReady();
     const result = await this.store.createExecutionRun(prepared.run);
     if (!result.created) throw new Error("人工金丝雀执行记录发生意外重复");
     await this.store.appendExecutionAudit(prepared.run.id, "OPERATOR_CANARY_PREPARED", {
@@ -522,6 +676,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async assertFreshExecutionPreconditions(run) {
+    this.assertRuntimeReady();
     const symbol = this.assertAllowedSymbol(run.symbol);
     if (hashPlan(run.plan) !== run.planHash) throw new Error("执行计划哈希不一致，拒绝提交");
     if (run.plan.expiresAt <= this.now()) throw new Error("执行计划已经过期");
@@ -530,6 +685,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
     const account = await this.client.fetchAccountState(symbol);
     assertAccountReadyForNewEntry(account, activeRuns, { candidateSymbol: symbol, candidateRunId: run.id });
     await this.verifyTradingPermission(account, { symbol, plan: run.plan });
+    this.assertRuntimeReady();
     if (!Number.isFinite(account.availableBalance) || account.availableBalance < run.plan.marginEstimate) throw new Error("测试网可用余额不足");
     return account;
   }
@@ -561,7 +717,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
     run.updatedAt = this.now();
     await this.store.saveExecutionRun(run);
     if (eventType) await this.store.appendExecutionAudit(run.id, eventType, payload, run.updatedAt);
-    this.emit("execution", structuredClone(run));
+    RUN_OPERATION_CONTEXT.exit(() => this.emit("execution", structuredClone(run)));
     return run;
   }
 
@@ -676,6 +832,11 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async execute(runId, confirmationCode) {
+    return await this.withRunOwnership(runId, () => this.executeOwned(runId, confirmationCode));
+  }
+
+  async executeOwned(runId, confirmationCode) {
+    this.assertRuntimeReady();
     if (!this.enabled) throw new TestnetWriteDisabledError("executeCanary");
     this.acquireProcessLock();
     if (this.executing.has(runId)) throw new Error(`执行记录 ${runId} 正在提交，拒绝并发执行`);
@@ -705,6 +866,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
           ? await this.client.fetchBookTicker(symbol)
           : null;
         const entryRequest = buildEntryOrderRequest(run.plan, bookTicker);
+        this.assertRuntimeReady();
         run.entryExecution = {
           mode: entryRequest.mode,
           timeInForce: entryRequest.timeInForce,
@@ -775,6 +937,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
         let order = await this.client.queryOrder(symbol, run.plan.clientIds.entry);
         let recoveredFromQuery = Boolean(order);
         if (!order) {
+          this.assertRuntimeReady();
           try {
             order = await this.client.placeLimitOrder({
               symbol,
@@ -823,6 +986,20 @@ export class TestnetCanaryExecutor extends EventEmitter {
         if (error instanceof BinanceApiError && error.apiCode === -4028 && !run.entryExecution?.submittedAt) {
           return await this.rejectUnsupportedLeverage(run, { source: "EXCHANGE_REJECTION", message: errorMessage(error) });
         }
+        // A persisted intent or ACK means an absent local fill is not proof of
+        // no exchange order. Keep the run recoverable by its original client ID,
+        // including when the initial lookup or the post-error lookup itself fails.
+        const entryMayExist = run.entryExecution?.submittedAt != null
+          || run.entryFactVerification?.submittedAt != null || Boolean(run.entryOrder?.orderId);
+        if (entryMayExist && !(Number(run.entryOrder?.executedQuantity) > 0)) {
+          run.status = run.entryOrder?.orderId ? "ENTRY_FACT_PENDING" : "SUBMISSION_UNKNOWN";
+          run.error = errorMessage(error);
+          run.result = null;
+          return await this.persist(run, "ENTRY_SUBMISSION_UNKNOWN", {
+            message: run.error, reason: "POST_INTENT_FACTS_UNCONFIRMED", clientOrderId: run.plan.clientIds.entry,
+            acknowledgementPresent: Boolean(run.entryOrder?.orderId),
+          });
+        }
         run.status = run.entryOrder?.executedQuantity > 0 ? "ERROR_UNPROTECTED" : "FAILED";
         run.performanceEligible = run.status === "ERROR_UNPROTECTED" ? run.performanceEligible : false;
         run.executionException = run.status === "ERROR_UNPROTECTED" ? run.executionException : PRE_ENTRY_FAILURE_EXCEPTION;
@@ -839,6 +1016,13 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async reconcile(runId, { account = null } = {}) {
+    // Preserve the existing coalescing of an already-running reconciliation.
+    // This path only reads; every state-changing path still owns the run.
+    if (this.reconciling.has(runId)) return await this.store.getExecutionRun(runId);
+    return await this.withRunOwnership(runId, () => this.reconcileOwned(runId, { account }));
+  }
+
+  async reconcileOwned(runId, { account = null } = {}) {
     this.acquireProcessLock();
     if (this.executing.has(runId)) return await this.store.getExecutionRun(runId);
     if (this.reconciling.has(runId)) return await this.store.getExecutionRun(runId);
@@ -982,6 +1166,10 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async reconcileEntry(run, account = null) {
+    return await this.withRunObject(run, current => this.reconcileEntryOwned(current, account));
+  }
+
+  async reconcileEntryOwned(run, account = null) {
     const symbol = this.assertAllowedSymbol(run.symbol);
     const clientOrderId = run.plan.clientIds.entry;
     const managedTp1 = hasManagedTp1Lifecycle(run);
@@ -1168,6 +1356,20 @@ export class TestnetCanaryExecutor extends EventEmitter {
       }
     }
     if (!order) throw protectionQueryUnknown(`${key} 提交响应为空，等待原ID查询`);
+    if (["stop", "breakEvenStop"].includes(key) && isActiveAlgo(order)) {
+      const evidence = rememberStopExecution(run, key, clientAlgoId, order, this.now());
+      if (stopExecutionConflict(evidence, order)) {
+        run.protection.observations ??= {};
+        run.protection.observations[key] = { known: false, state: "UNKNOWN", clientAlgoId,
+          checkedAt: this.now(), executionMayHaveOccurred: true, executionConflict: true, executionEvidence: evidence };
+        throw protectionQueryUnknown(`${key} 活动查询与既有退出证据冲突`);
+      }
+    }
+    const finishedStop=finishedStopObservation(run,key,order,position);
+    if (finishedStop && finishedStop!=="PARTIAL_EXIT_WITHOUT_STOP") {
+      if (protectionOrderKnown(order,run,key)) run.protection[key]=order;
+      throw protectionQueryUnknown(`${key} 已执行止损等待退出核实: ${finishedStop}`);
+    }
     if (!isActiveAlgo(order)) throw new Error(`${key} 条件单不是活动状态: ${order.status ?? "UNKNOWN"}`);
     if (!protectionOrderKnown(order, run, key)
       || (position && !effectivePositionStop(order, run, position))) throw protectionQueryUnknown(`${key} 条件单身份、方向或全仓覆盖无效`);
@@ -1271,6 +1473,10 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async ensureProtection(run, filledQuantity, { stopOnly = false } = {}) {
+    return await this.withRunObject(run, current => this.ensureProtectionOwned(current, filledQuantity, { stopOnly }));
+  }
+
+  async ensureProtectionOwned(run, filledQuantity, { stopOnly = false } = {}) {
     this.acquireProcessLock();
     if (hasManagedTp1Lifecycle(run)) return await this.holdManagedProtection(run, "INITIAL_PROTECTION_REENTRY_BLOCKED");
     run.protection.phase = "INITIAL";
@@ -1395,11 +1601,20 @@ export class TestnetCanaryExecutor extends EventEmitter {
       const recovery = run.protection.tpRecovery?.[key];
       const clientAlgoId = recovery?.currentClientId ?? run.plan.clientIds[key];
       if (!clientAlgoId) return [key, null];
-      const observe = order => {
+      const observe = (order, state = order ? "PRESENT" : "UNKNOWN") => {
+        if (state === "UNKNOWN") noteIncompleteBatch();
         if (["stop", "breakEvenStop"].includes(key)) {
           run.protection.observations ??= {};
-          run.protection.observations[key] = { known: Boolean(order) || !(run.protection[key]
-            || run.protection.orderSubmissions?.[key]?.attempted), checkedAt: this.now() };
+          const previous = run.protection.observations[key];
+          const evidence = rememberStopExecution(run, key, clientAlgoId, order, this.now());
+          const conflict = stopExecutionConflict(evidence, order);
+          const executionConflict = conflict || Boolean(evidence && previous?.executionConflict);
+          run.protection.observations[key] = {
+            known: state !== "UNKNOWN" && !executionConflict, state: executionConflict ? "UNKNOWN" : state,
+            clientAlgoId, checkedAt: this.now(), executionMayHaveOccurred: Boolean(evidence),
+            executionConflict, executionEvidence: evidence,
+          };
+          if (executionConflict) return [key, null];
         }
         return [key, order];
       };
@@ -1409,7 +1624,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
         for (const [index, id] of recovery.ids.entries()) {
           let order;
           try { order = activeByClientId.get(String(id)) ?? await this.client.queryAlgoOrder(id); }
-          catch { continue; } // Per-leg UNKNOWN is handled without suppressing its sibling.
+          catch { noteIncompleteBatch(); continue; } // Per-leg UNKNOWN is handled without suppressing its sibling.
           if (!order) continue;
           if (!protectionOrderKnown(order, run, key) || String(order.clientAlgoId) !== String(id)) {
             recovery.reason = "ORDER_IDENTITY_INVALID";
@@ -1424,6 +1639,11 @@ export class TestnetCanaryExecutor extends EventEmitter {
       }
       const active = activeByClientId.get(String(clientAlgoId));
       const validate = order => {
+        if (["stop", "breakEvenStop"].includes(key)) {
+          if (order === null) return observe(null, "NOT_FOUND");
+          if (!protectionOrderKnown(order,run,key)
+            || ![...ACTIVE_ALGO_STATUSES,"FINISHED","CANCELED","REJECTED","EXPIRED","EXPIRED_IN_MATCH"].includes(order?.status)) return observe(null,"UNKNOWN");
+        }
         if (order && ["takeProfit1", "takeProfit2"].includes(key)
           && (!protectionOrderKnown(order, run, key) || String(order.clientAlgoId) !== String(clientAlgoId))) {
           const state = this.takeProfitRecovery(run, key);
@@ -1435,6 +1655,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
       if (active) return validate(active);
       try { return validate(await this.client.queryAlgoOrder(clientAlgoId)); }
       catch (error) {
+        noteIncompleteBatch();
         if (!["takeProfit1", "takeProfit2"].includes(key)) throw error;
         const state = this.takeProfitRecovery(run, key);
         state.attempted = true;
@@ -1470,8 +1691,13 @@ export class TestnetCanaryExecutor extends EventEmitter {
         timeFacts = entryOrderTimeFacts(run);
       }
     }
+    const rawExchangeNow = typeof this.client.getExchangeTime === "function" ? await this.client.getExchangeTime() : null;
+    const exchangeNow = (typeof rawExchangeNow === "number" || typeof rawExchangeNow === "string" && rawExchangeNow.trim() !== "")
+      && Number.isSafeInteger(Number(rawExchangeNow)) && Number(rawExchangeNow) > 0 ? Number(rawExchangeNow) : null;
+    const exchangeTimeBasis = exchangeNow === null ? null : { source: "EXCHANGE_SERVER_TIME", upperBound: exchangeNow };
+    const historicalExits = verifiedProtectionExitOrders(run, exchangeTimeBasis);
     const entryOrderIds = new Set([run.entryOrder?.orderId].filter(validOrderId).map(String));
-    const exitOrders = [run.operatorCloseOrder, ...Object.values(run.protection ?? {})]
+    const exitOrders = [run.operatorCloseOrder, ...Object.values(run.protection ?? {}), ...historicalExits]
       .filter(order => order && typeof order === "object");
     // Algo IDs are not trade order IDs. Zero denotes a leg that never filled.
     const exitOrderIds = new Set(exitOrders.flatMap(order => {
@@ -1480,9 +1706,12 @@ export class TestnetCanaryExecutor extends EventEmitter {
     }));
     const ownedOrderIds = new Set([...entryOrderIds, ...exitOrderIds]);
     const startTime = timeFacts.startTime;
-    const exchangeNow = typeof this.client.getExchangeTime === "function" ? await this.client.getExchangeTime() : null;
-    const knownUpdates = [run.entryOrder, ...exitOrders].map(order => finiteValue(order?.updateTime)).filter(value => value > 0);
-    const endTime = Math.max(exchangeNow ?? 0, ...knownUpdates, startTime ?? 0);
+    // No order under verification may enlarge a known exchange-server bound.
+    // Legacy top-level orders retain their existing fallback when it is absent;
+    // newly consumed historical observations never participate in that fallback.
+    const knownUpdates = [run.entryOrder, run.operatorCloseOrder, ...Object.values(run.protection ?? {})]
+      .map(order => finiteValue(order?.updateTime)).filter(value => value > 0);
+    const endTime = exchangeNow ?? Math.max(0, ...knownUpdates, startTime ?? 0);
     const unique = new Map();
     let tradesComplete = timeFacts.status === "CONFIRMED" && endTime > 0 && startTime >= endTime - 180 * 24 * 60 * 60_000;
     const week = 7 * 24 * 60 * 60_000 - 1;
@@ -1521,7 +1750,9 @@ export class TestnetCanaryExecutor extends EventEmitter {
       && (!entryOrderIds.has(String(trade.orderId)) || entryFillTimeMatches(run, trade))
       && (finiteValue(trade.quoteQuantity) === null || quantitiesEqual(Number(trade.quoteQuantity), Number(trade.quantity) * Number(trade.price)))
       && finiteValue(trade.commission) !== null
-      && trade.commissionAsset === "USDT" && finiteValue(trade.realizedPnl) !== null);
+      && trade.commissionAsset === "USDT" && finiteValue(trade.realizedPnl) !== null)
+      && historicalExits.every(order => trades.filter(t => String(t.orderId) === order.actualOrderId)
+        .every(t => Number.isSafeInteger(Number(t.time)) && typeof t.time !== "boolean" && Number(t.time) <= order.updateTime));
     const quantities = ids => trades.filter(t => ids.has(String(t.orderId))).reduce((sum, t) => sum + (finiteValue(t.quantity) ?? 0), 0);
     const entryQuantity = quantities(entryOrderIds), exitQuantity = quantities(exitOrderIds);
     const expected = finiteValue(run.entryOrder?.executedQuantity);
@@ -1560,14 +1791,14 @@ export class TestnetCanaryExecutor extends EventEmitter {
       }
     }
     const fundingIncome = [...income.values()];
-    return { trades, entryTimeStatus: timeFacts.status, entryTimeReason: timeFacts.reason,
+    return { trades, exchangeTimeBasis, entryTimeStatus: timeFacts.status, entryTimeReason: timeFacts.reason,
       fundingIncome, fundingPnl: fundingComplete ? fundingIncome.reduce((sum, item) => sum + Number(item.income), 0) : null,
       fundingComplete, tradesComplete, ownedOrderIds: [...ownedOrderIds],
       exitFactsComplete: tradesComplete && fieldsComplete && quantityComplete && entryOrderIds.size > 0 && exitOrderIds.size > 0,
       accountingComplete: tradesComplete && fieldsComplete && fundingComplete && quantityComplete && entryOrderIds.size > 0 && exitOrderIds.size > 0 };
   }
 
-  buildRunResult({ trades, fundingIncome = [], fundingPnl = null, ownedOrderIds = [], accountingComplete = false }, run) {
+  buildRunResult({ trades, fundingIncome = [], fundingPnl = null, ownedOrderIds = [], accountingComplete = false, exchangeTimeBasis = null }, run) {
     const commission = trades.length > 0 && trades.every(t => finiteValue(t.commission) !== null && t.commissionAsset === "USDT")
       ? trades.reduce((sum, t) => sum + Number(t.commission), 0) : null;
     const realizedPnl = trades.length > 0 && trades.every(t => finiteValue(t.realizedPnl) !== null)
@@ -1576,7 +1807,8 @@ export class TestnetCanaryExecutor extends EventEmitter {
     const entryOrderIds = new Set([run.entryOrder?.orderId].filter(validOrderId).map(String));
     const exitOrderIds = new Set(trades.filter(t => !entryOrderIds.has(String(t.orderId))).map(t => String(t.orderId)));
     const exitRole = ["operatorClose", "breakEvenStop", "stop", "takeProfit2", "takeProfit1"].find(role => {
-      const order = role === "operatorClose" ? run.operatorCloseOrder : run.protection?.[role];
+      const order = role === "operatorClose" ? run.operatorCloseOrder
+        : run.protection?.[role] ?? verifiedProtectionExitOrders(run, exchangeTimeBasis).find(o => o.role === role);
       const id = Object.hasOwn(order ?? {}, "actualOrderId") ? order.actualOrderId : order?.orderId;
       return validOrderId(id) && exitOrderIds.has(String(id));
     }) ?? null;
@@ -1584,7 +1816,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
       exitReason: reasonForExitRole(run.plan.orderReasons, exitRole) ?? "交易所确认系统仓位已经关闭，因此结束本次Binance Demo交易。",
       commission, realizedPnl, fundingPnl, fundingIncome,
       netPnl: accountingComplete ? realizedPnl - commission + fundingPnl : null,
-      netR: null, trades, ownedOrderIds, accountingComplete };
+      netR: null, trades, ownedOrderIds, accountingComplete, exchangeTimeBasis };
   }
 
   runResiduals(account, run) {
@@ -1607,6 +1839,10 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async holdManagedProtection(run, reason) {
+    return await this.withRunObject(run, current => this.holdManagedProtectionOwned(current, reason));
+  }
+
+  async holdManagedProtectionOwned(run, reason) {
     const changed = run.protection.managedRecovery?.reason !== reason || run.status !== "PROTECTION_INCOMPLETE";
     run.protection.managedRecovery = { postTp1: true, reason, checkedAt: this.now() };
     run.status = "PROTECTION_INCOMPLETE";
@@ -1617,6 +1853,10 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async holdProtectionCleanup(run, reason) {
+    return await this.withRunObject(run, current => this.holdProtectionCleanupOwned(current, reason));
+  }
+
+  async holdProtectionCleanupOwned(run, reason) {
     const changed = run.protection.cleanupVerification?.reason !== reason || run.status !== "PROTECTION_INCOMPLETE";
     run.protection.cleanupVerification = { status: "PENDING", reason, checkedAt: this.now() };
     run.status = "PROTECTION_INCOMPLETE";
@@ -1626,11 +1866,68 @@ export class TestnetCanaryExecutor extends EventEmitter {
     return run;
   }
 
+  async confirmMissingPositionStop(run, account, position) {
+    const stopId = run.plan.clientIds.stop;
+    const prior = run.protection.observations?.stop;
+    if (prior?.state !== "NOT_FOUND" || prior.clientAlgoId !== stopId
+      || !run.protection.orderSubmissions?.stop?.attempted || run.entryExecution?.remainderPending
+      || run.status.startsWith("OPERATOR_CLOSE")
+      || Object.values(run.protection.observations ?? {}).some(o => o.executionMayHaveOccurred)
+      || !isTerminalOrder(run.entryOrder?.status)) {
+      return await this.holdProtectionCleanup(run, "MISSING_STOP_FACTS_UNCONFIRMED");
+    }
+    const requestedAt = this.now();
+    let fresh;
+    try { fresh = await this.client.fetchAccountState(run.symbol); }
+    catch { return await this.holdProtectionCleanup(run, "MISSING_STOP_ACCOUNT_QUERY_FAILED"); }
+    const receivedAt = this.now(), syncedAt = finiteValue(fresh?.syncedAt);
+    if (!independentAccountFresh(fresh, account, requestedAt, receivedAt)) {
+      return await this.holdProtectionCleanup(run, "MISSING_STOP_ACCOUNT_NOT_FRESH_OR_COMPLETE");
+    }
+    const current = fresh.positions.find(p => p.symbol === run.symbol && Math.abs(Number(p.quantity ?? p.positionAmt)) > 0);
+    if (!current || !quantitiesEqual(Number(current.quantity ?? current.positionAmt), Number(position.quantity ?? position.positionAmt))) {
+      return await this.holdProtectionCleanup(run, "MISSING_STOP_POSITION_CHANGED");
+    }
+    const facts = await this.verifyEntryFacts(run, fresh);
+    if (facts.pending || run.status === "ENTRY_FACT_CONFLICT") return run;
+    if (!facts.order) return await this.holdProtectionCleanup(run, "MISSING_STOP_ENTRY_IDENTITY_UNCONFIRMED");
+    let latest;
+    try { latest = await this.queryKnownProtection(run, fresh); }
+    catch { return await this.holdProtectionCleanup(run, "MISSING_STOP_REQUERY_FAILED"); }
+    run.protection = { ...run.protection, ...latest };
+    run.exchange = fresh;
+    if (effectivePositionStop(latest.stop, run, current) || effectivePositionStop(latest.breakEvenStop, run, current)) {
+      return await this.holdProtectionCleanup(run, "MISSING_STOP_PROTECTION_REAPPEARED");
+    }
+    if (run.protection.observations?.stop?.state !== "NOT_FOUND"
+      || Object.values(run.protection.observations ?? {}).some(o => o.executionMayHaveOccurred)
+      || (run.protection.breakEvenStop || hasManagedTp1Lifecycle(run))
+        && run.protection.observations?.breakEvenStop?.state !== "NOT_FOUND") {
+      return await this.holdProtectionCleanup(run, "MISSING_STOP_REQUERY_UNCONFIRMED");
+    }
+    const active = await this.store.listActiveExecutionRuns();
+    const classification = classifyExecutionAccountState(fresh, active);
+    const owned = classification.owned.positions.filter(p => p.runId === run.id && p.item.symbol === run.symbol);
+    if (classification.unknown.length || classification.conflicts.length || owned.length !== 1
+      || classification.missingStops.some(s => s.runId !== run.id) || fresh.openOrders.some(o => o.symbol === run.symbol)) {
+      return await this.holdProtectionCleanup(run, "MISSING_STOP_OWNERSHIP_UNCONFIRMED");
+    }
+    await this.persist(run, "MISSING_STOP_CONFIRMED", {
+      clientAlgoId: stopId, accountSyncedAt: syncedAt, checkedAt: receivedAt,
+      quantity: current.quantity, reason: "ORIGINAL_ID_NOT_FOUND_AND_INDEPENDENT_OWNED_POSITION",
+    });
+    return await this.emergencyCloseUnprotectedRun(run, "ACTIVE_STOP_MISSING");
+  }
+
   cleanupAccountValid(account) {
     return accountProtectionFactsKnown(account);
   }
 
   async reconcileProtected(run, accountSnapshot = null) {
+    return await this.withRunObject(run, current => this.reconcileProtectedOwned(current, accountSnapshot));
+  }
+
+  async reconcileProtectedOwned(run, accountSnapshot = null) {
     const symbol = this.assertAllowedSymbol(run.symbol);
     const managedTp1 = hasManagedTp1Lifecycle(run);
     if (managedTp1) run.protection.managedRecovery = { ...run.protection.managedRecovery, postTp1: true };
@@ -1673,8 +1970,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
       try { confirmedAccount = await this.client.fetchAccountState(symbol); }
       catch { return await this.holdProtectionCleanup(run, "INDEPENDENT_ACCOUNT_QUERY_FAILED"); }
       const receivedAt = this.now(), syncedAt = finiteValue(confirmedAccount?.syncedAt);
-      if (!this.cleanupAccountValid(confirmedAccount) || confirmedAccount === account
-        || syncedAt === null || syncedAt < requestedAt || syncedAt > receivedAt || receivedAt - syncedAt > 30_000) {
+      if (!independentAccountFresh(confirmedAccount, account, requestedAt, receivedAt)) {
         return await this.holdProtectionCleanup(run, "INDEPENDENT_ACCOUNT_NOT_FRESH_OR_COMPLETE");
       }
       run.exchange = confirmedAccount;
@@ -1726,6 +2022,23 @@ export class TestnetCanaryExecutor extends EventEmitter {
       });
     }
 
+    // Query/account observations can straddle the same stop execution. Resolve
+    // that observation before any initial-protection rebuild, BE action or
+    // unprotected auto-close. The existing zero-position branch above still
+    // requires owned fills and an independent fresh account before cleanup.
+    if (!effectivePositionStop(protection.stop,run,position)
+      && !effectivePositionStop(protection.breakEvenStop,run,position)) {
+      for (const role of ["breakEvenStop","stop"]) {
+        const observation=finishedStopObservation(run,role,protection[role],position);
+        if (observation && observation!=="PARTIAL_EXIT_WITHOUT_STOP") {
+          return await this.holdProtectionCleanup(run,`${role}:${observation}`);
+        }
+        if (observation==="PARTIAL_EXIT_WITHOUT_STOP") {
+          run.error="止损仅部分退出，剩余仓位没有有效止损";
+          return await this.emergencyCloseUnprotectedRun(run,"ACTIVE_STOP_MISSING");
+        }
+      }
+    }
     const executionMetrics = updateExecutionMetrics(run, this.minimumFillRatio);
     if (excludeUndersizedStrategyFill(run, executionMetrics)) {
       await this.store.appendExecutionAudit(run.id, "EXECUTION_SAMPLE_EXCLUDED", {
@@ -1763,6 +2076,10 @@ export class TestnetCanaryExecutor extends EventEmitter {
     }
     const beEffective = effectivePositionStop(protection.breakEvenStop, run, position);
     const originalEffective = effectivePositionStop(protection.stop, run, position);
+    if (!beEffective && !originalEffective && run.protection.observations?.stop?.state==="NOT_FOUND"
+      && run.protection.orderSubmissions?.stop?.attempted) {
+      return await this.confirmMissingPositionStop(run,account,position);
+    }
     if (!beEffective && !originalEffective && Object.values(run.protection.observations ?? {}).some(fact => !fact.known)) {
       return managedTp1 ? await this.holdManagedProtection(run, "PROTECTION_QUERY_EMPTY")
         : await this.holdProtectionCleanup(run, "PROTECTION_QUERY_EMPTY");
@@ -1917,6 +2234,10 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async closeExecutionRun(runId, reason = null) {
+    return await this.withRunOwnership(runId, () => this.closeExecutionRunOwned(runId, reason));
+  }
+
+  async closeExecutionRunOwned(runId, reason = null) {
     this.acquireProcessLock();
     if (!this.enabled) throw new TestnetWriteDisabledError("closeExecutionRun");
     const run = await this.store.getExecutionRun(runId);
@@ -2011,6 +2332,10 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async refreshClosedRunAccounting(runId) {
+    return await this.withRunOwnership(runId, () => this.refreshClosedRunAccountingOwned(runId));
+  }
+
+  async refreshClosedRunAccountingOwned(runId) {
     this.acquireProcessLock();
     const run = await this.store.getExecutionRun(runId);
     if (!run) throw new Error(`找不到执行记录 ${runId}`);
@@ -2038,29 +2363,45 @@ export class TestnetCanaryExecutor extends EventEmitter {
     this.acquireProcessLock();
     const value = { active: true, reason, runId, at: this.now() };
     await this.store.setMetadata("testnet_execution_emergency_stop", value);
-    if (runId) await this.store.appendExecutionAudit(runId, "EMERGENCY_STOP_ENGAGED", value, value.at);
+    if (runId) {
+      try { await this.store.appendExecutionAudit(runId, "EMERGENCY_STOP_ENGAGED", value, value.at); }
+      catch { this.recordRuntimeFault("EMERGENCY_STOP_AUDIT"); }
+    }
+    const context = RUN_OPERATION_CONTEXT.getStore();
+    if (context?.store === this.store && storeRunLocks(this.store).owners.get(context.runId) === context.token) {
+      context.afterRelease.push(() => this.cancelEmergencyEntries());
+    } else {
+      await this.cancelEmergencyEntries();
+    }
+    RUN_OPERATION_CONTEXT.exit(() => this.emit("emergencyStop", structuredClone(value)));
+    return value;
+  }
+
+  async cancelEmergencyEntries() {
     const activeRuns = await this.store.listActiveExecutionRuns();
-    for (const run of activeRuns) {
-      if (!ENTRY_STATUSES.has(run.status) || !run.plan?.clientIds?.entry) continue;
-      const symbol = this.assertAllowedSymbol(run.symbol);
-      const order = await this.client.queryOrder(symbol, run.plan.clientIds.entry);
-      if (!order || isTerminalOrder(order.status)) continue;
-      try {
-        const canceled = await this.client.cancelOrder(symbol, run.plan.clientIds.entry);
-        run.entryOrder = canceled;
-        await this.persist(run, "EMERGENCY_ENTRY_CANCELED", { executedQuantity: canceled.executedQuantity });
-        if (Number(canceled.executedQuantity) > 0) await this.ensureProtection(run, Number(canceled.executedQuantity));
-        else {
-          run.status = "CANCELED";
-          run.result = { reason: "EMERGENCY_STOP", filledQuantity: 0 };
-          await this.persist(run, "CANARY_CANCELED_UNFILLED", { reason: "EMERGENCY_STOP" });
-        }
-      } catch (error) {
-        this.logger.error(`[execution-emergency] ${run.id}: ${errorMessage(error)}`);
+    for (const sampled of activeRuns) {
+      try { await this.withRunOwnership(sampled.id, async () => {
+        const run = await this.store.getExecutionRun(sampled.id);
+        if (!run || !ENTRY_STATUSES.has(run.status) || !run.plan?.clientIds?.entry) return;
+        const symbol = this.assertAllowedSymbol(run.symbol);
+        const order = await this.client.queryOrder(symbol, run.plan.clientIds.entry);
+        if (!order || isTerminalOrder(order.status)) return;
+          const canceled = await this.client.cancelOrder(symbol, run.plan.clientIds.entry);
+          run.entryOrder = canceled;
+          // A reporting failure after a confirmed partial cancellation must not
+          // suppress the existing protection path for that confirmed fill.
+          try { await this.persist(run, "EMERGENCY_ENTRY_CANCELED", { executedQuantity: canceled.executedQuantity }); }
+          catch { this.recordRuntimeFault("EMERGENCY_ENTRY_PERSISTENCE"); }
+          if (Number(canceled.executedQuantity) > 0) await this.ensureProtection(run, Number(canceled.executedQuantity));
+          else {
+            run.status = "CANCELED";
+            run.result = { reason: "EMERGENCY_STOP", filledQuantity: 0 };
+            await this.persist(run, "CANARY_CANCELED_UNFILLED", { reason: "EMERGENCY_STOP" });
+          }
+      }); } catch {
+        this.recordRuntimeFault("EMERGENCY_ENTRY_RECONCILIATION");
       }
     }
-    this.emit("emergencyStop", structuredClone(value));
-    return value;
   }
 
   async clearEmergencyStop() {
@@ -2091,35 +2432,76 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async reconcileAll() {
+    const runtime = storeRunLocks(this.store).runtime;
+    const generation = runtime.generation;
+    try {
+      const batch = { complete: true };
+      return await RECONCILE_BATCH_CONTEXT.run(batch, () => this.reconcileAllBatch(generation, batch));
+    } catch {
+      this.recordRuntimeFault("BATCH_UNEXPECTED");
+      return [];
+    }
+  }
+
+  async reconcileAllBatch(generation, batch) {
+    const runtime = storeRunLocks(this.store).runtime;
     const active = await this.store.listActiveExecutionRuns();
     let account = null;
-    if (active.some((run) => run.status !== "PREPARED") && typeof this.client.fetchAccountOverview === "function") {
+    let accountFresh = false;
+    const requestedAt = this.now();
+    if ((runtime.active || active.some((run) => run.status !== "PREPARED")) && typeof this.client.fetchAccountOverview === "function") {
       try {
         account = await this.client.fetchAccountOverview();
         if (!accountProtectionFactsKnown(account)) throw new Error("账户批量对账字段未确认");
-        this.lastReconcileAt = this.now();
-        this.lastReconcileError = null;
+        const locks = storeRunLocks(this.store);
+        accountFresh = independentAccountFresh(account, locks.lastBatchAccount, requestedAt, this.now());
+        locks.lastBatchAccount = account;
       } catch (error) {
-        this.lastReconcileError = {
-          message: errorMessage(error),
-          at: this.now(),
-          retryAt: Number.isFinite(error?.retryAt) ? error.retryAt : Number.isFinite(this.client.blockedUntil) ? this.client.blockedUntil : null,
-        };
-        this.logger.error(`[execution] 账户批量对账暂停: ${this.lastReconcileError.message}`);
-        for (const run of active) {
-          if (!["OPEN_PROTECTED", "TP1_FILLED", "PROTECTION_PENDING", "PROTECTION_INCOMPLETE"].includes(run.status)) continue;
-          if (hasManagedTp1Lifecycle(run)) await this.holdManagedProtection(run, "BATCH_ACCOUNT_UNCONFIRMED");
-          else await this.holdProtectionCleanup(run, "BATCH_ACCOUNT_UNCONFIRMED");
+        this.recordRuntimeFault("ACCOUNT_OVERVIEW");
+        for (const sampled of active) {
+          await this.withRunOwnership(sampled.id, async () => {
+            const run = await this.store.getExecutionRun(sampled.id);
+            if (!run || !["OPEN_PROTECTED", "TP1_FILLED", "PROTECTION_PENDING", "PROTECTION_INCOMPLETE"].includes(run.status)) return;
+            if (hasManagedTp1Lifecycle(run)) await this.holdManagedProtection(run, "BATCH_ACCOUNT_UNCONFIRMED");
+            else await this.holdProtectionCleanup(run, "BATCH_ACCOUNT_UNCONFIRMED");
+          });
         }
         return [];
       }
     }
     const results = [];
+    let complete = true;
     for (const run of active) {
       try {
-        results.push(await this.reconcile(run.id, { account }));
-      } catch (error) {
-        this.logger.error(`[execution] ${run.id}: ${errorMessage(error)}`);
+        // Own and reread even if another executor was already reconciling.
+        const result = await this.withRunOwnership(run.id, () => this.reconcileOwned(run.id, { account }));
+        results.push(result);
+        if (!result || blocksNewExecutionEntry(result)
+          || Object.values(result.protection?.observations ?? {}).some(fact => fact.known !== true)
+          || Object.values(result.protection?.tpRecovery ?? {}).some(fact => fact.pending === true)) complete = false;
+      } catch {
+        complete = false;
+        this.recordRuntimeFault("RUN_RECONCILIATION");
+      }
+    }
+    const current = await this.store.listActiveExecutionRuns();
+    const checked = new Set(results.filter(Boolean).map(run => run.id));
+    if (current.some(run => !checked.has(run.id) || blocksNewExecutionEntry(run))) complete = false;
+    const verifiedEmpty = active.length === 0 && current.length === 0 && accountFresh
+      && account.positions.length === 0 && account.openOrders.length === 0 && account.openAlgoOrders.length === 0;
+    if (!batch.complete) this.recordRuntimeFault("RUN_QUERY_UNCONFIRMED");
+    if (runtime.active && account && !accountFresh) this.recordRuntimeFault("ACCOUNT_NOT_FRESH");
+    if (accountFresh && independentAccountFresh(account, null, requestedAt, this.now())
+      && classifyExecutionAccountState(account, current).safe
+      && complete && batch.complete && (active.length > 0 || verifiedEmpty) && runtime.generation === generation) {
+      const recovered = runtime.active;
+      runtime.active = false;
+      runtime.lastSuccessfulAt = this.now();
+      this.lastReconcileAt = runtime.lastSuccessfulAt;
+      this.lastReconcileError = null;
+      if (recovered) {
+        runtime.recoveredAt = this.now();
+        try { this.logger.info?.("[execution] 完整新对账已恢复运行就绪"); } catch { /* The recovered state is authoritative. */ }
       }
     }
     return results;
@@ -2135,7 +2517,10 @@ export class TestnetCanaryExecutor extends EventEmitter {
       }
       await this.reconcileAll();
       if (this.timer) return;
-      this.timer = setInterval(() => void this.reconcileAll(), this.pollMs);
+      this.timer = setInterval(() => {
+        // Also catches synchronous overrides and failures of the outer boundary.
+        void Promise.resolve().then(() => this.reconcileAll()).catch(() => this.recordRuntimeFault("SCHEDULED_RECONCILIATION"));
+      }, this.pollMs);
       this.timer.unref?.();
     } catch (error) {
       this.stop();
@@ -2163,8 +2548,9 @@ export class TestnetCanaryExecutor extends EventEmitter {
       emergencyStop: (await this.store.getMetadata("testnet_execution_emergency_stop"))?.value ?? { active: false },
       capacity: typeof this.store.getExecutionCapacity === "function" ? await this.store.getExecutionCapacity() : null,
       reconciliation: {
-        lastSuccessfulAt: this.lastReconcileAt,
-        error: this.lastReconcileError,
+        lastSuccessfulAt: storeRunLocks(this.store).runtime.lastSuccessfulAt,
+        error: storeRunLocks(this.store).runtime.active ? storeRunLocks(this.store).runtime.fault : null,
+        runtime: this.runtimeStatus(),
       },
       runs: await this.store.listExecutionRuns(20),
     };

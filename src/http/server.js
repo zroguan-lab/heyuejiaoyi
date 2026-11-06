@@ -102,6 +102,7 @@ export function createDashboardServer({ monitor, accountMonitor = null, executio
       status: "DISABLED",
     };
     const permissionProbe = canaryExecutor?.permissionStatus ? await canaryExecutor.permissionStatus() : null;
+    const executionRuntime = canaryExecutor?.runtimeStatus?.() ?? { known: false, active: true };
     const activeRuns = await (store.listActiveExecutionRuns?.() ?? []);
     const emergencyStop = (await store.getMetadata?.("testnet_execution_emergency_stop"))?.value ?? { active: false };
     const unsafeRun = activeRuns.find(blocksNewExecutionEntry);
@@ -120,7 +121,9 @@ export function createDashboardServer({ monitor, accountMonitor = null, executio
       permissionProbe,
       emergencyStop,
       safetyHold,
-      effectiveOrderSubmissionEnabled: Boolean(gateway.orderSubmissionEnabled && !emergencyStop.active && !safetyHold.active),
+      executionRuntime,
+      effectiveOrderSubmissionEnabled: Boolean(gateway.orderSubmissionEnabled && !emergencyStop.active && !safetyHold.active
+        && executionRuntime.known === true && executionRuntime.active === false),
       capacity,
       automation: strategyExecutionCoordinator?.snapshot() ?? { enabled: false, status: "DISABLED", lastDecision: null },
       readiness: assessTestnetReadiness({
@@ -129,6 +132,7 @@ export function createDashboardServer({ monitor, accountMonitor = null, executio
         credentialsConfigured: Boolean(config.execution?.credentialsConfigured),
         permissionProbe,
         activeRuns,
+        executionRuntime,
       }),
     };
   };

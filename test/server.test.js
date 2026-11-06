@@ -74,7 +74,11 @@ test("研究API返回组合状态并允许记录手动跟单但不会暴露执�
       emergencyStopAvailable: false,
     }),
   };
-  const server = createDashboardServer({ monitor, accountMonitor, executionGateway, store, config, logger: { error() {} } });
+  const canaryExecutor = new EventEmitter();
+  let executionRuntime = { known: true, active: false, generation: 0 };
+  canaryExecutor.runtimeStatus = () => structuredClone(executionRuntime);
+  canaryExecutor.snapshot = async () => ({});
+  const server = createDashboardServer({ monitor, accountMonitor, executionGateway, canaryExecutor, store, config, logger: { error() {} } });
   await listen(server, config);
   const address = server.address();
   const origin = `http://127.0.0.1:${address.port}`;
@@ -123,6 +127,15 @@ test("研究API返回组合状态并允许记录手动跟单但不会暴露执�
     assert.equal(execution.account.mode, "READ_ONLY");
 
     submissionEnabled = true;
+    executionRuntime = { known: true, active: true, generation: 1 };
+    const faultHealth = await (await fetch(`${origin}/api/health`)).json();
+    assert.equal(faultHealth.execution.effectiveOrderSubmissionEnabled, false);
+    assert.equal(faultHealth.execution.readiness.canPrepareCanary, false);
+    assert.ok(faultHealth.execution.readiness.blockedReasons.some(reason => reason.code === "EXECUTION_RUNTIME_READY"));
+    executionRuntime = { known: false };
+    const unknownRuntime = await (await fetch(`${origin}/api/execution/status`)).json();
+    assert.equal(unknownRuntime.effectiveOrderSubmissionEnabled, false);
+    executionRuntime = { known: true, active: false, generation: 1 };
     for (const status of ["ENTRY_FACT_PENDING", "ENTRY_FACT_CONFLICT", "OPERATOR_CLOSE_UNKNOWN", "SUBMISSION_UNKNOWN", "PROTECTION_INCOMPLETE", "ERROR_UNPROTECTED", "ENTRY_PENDING", "PARTIALLY_FILLED", "OPEN_PROTECTED", "TP1_FILLED"]) {
       store.activeRuns = [{ id: "matrix", status }];
       const state = await (await fetch(`${origin}/api/execution/status`)).json();

@@ -6,6 +6,18 @@ import {
   TestnetWriteDisabledError,
 } from "../src/execution/binance-testnet-trading.js";
 
+test("TEAM025真实适配器假fetch把明确不存在与成功空无效响应和网络未知分开",async()=>{
+  const valid={symbol:"BTCUSDT",algoId:7,clientAlgoId:"fixture-sl",side:"SELL",positionSide:"BOTH",orderType:"STOP_MARKET",algoStatus:"NEW",closePosition:true};
+  for(const [name,payload,status] of [["null",null,200],["false",false,200],["zero",0,200],["array",[],200],["empty",{},200],["client",{...valid,clientAlgoId:"foreign"},200],["side",{...valid,side:"INVALID"},200],["symbol",{...valid,symbol:"INVALID"},200],["status",{...valid,algoStatus:"UNKNOWN"},200],["notfound",{code:-2013,msg:"fixture absent"},400],["notfound2011",{code:-2011,msg:"fixture absent"},400],["auth",{code:-2015,msg:"fixture auth unknown"},400],["network",null,200],["valid",valid,200]]){
+    let requests=0;const client=new BinanceTestnetTradingClient({baseUrl:"https://demo-fapi.binance.com",apiKey:"fixture",apiSecret:"fixture",now:()=>20000,fetchImpl:async(url,options)=>{
+      assert.equal(options.method,"GET");const pathname=new URL(url).pathname;if(pathname==="/fapi/v1/time")return new Response('{"serverTime":20000}');
+      assert.equal(pathname,"/fapi/v1/algoOrder");requests++;if(name==="network")throw Error("fixture network unknown");return new Response(JSON.stringify(payload),{status});}});
+    if(name.startsWith("notfound"))assert.equal(await client.queryAlgoOrder("fixture-sl"),null,name);
+    else if(name==="valid")assert.equal((await client.queryAlgoOrder("fixture-sl")).clientAlgoId,"fixture-sl");
+    else await assert.rejects(()=>client.queryAlgoOrder("fixture-sl"),undefined,name);
+    assert.equal(requests,1,name);
+  }
+});
 test("TEAM018交易所创建时间与更新时间分别保留，不由updateTime或createTime猜创建时间",async()=>{
   const client=new BinanceTestnetTradingClient({baseUrl:"https://demo-fapi.binance.com",apiKey:"fixture",apiSecret:"fixture",now:()=>20_000});
   for(const payload of [{time:10000,updateTime:11000},{updateTime:11000},{createTime:10000,updateTime:11000},

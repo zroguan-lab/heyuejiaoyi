@@ -1,7 +1,30 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { executionFillFacts, executionExcursionFacts, observeOwnedExitFills, entryOrderTimeFacts, entryFillTimeMatches, isTerminalOrder } from "../src/execution/execution-fill-facts.js";
+import { executionFillFacts, executionExcursionFacts, observeOwnedExitFills, entryOrderTimeFacts, entryFillTimeMatches, isTerminalOrder, verifiedProtectionExitOrders, ownedExitFills } from "../src/execution/execution-fill-facts.js";
 import { projectExecutionRun } from "../src/execution/execution-run-projection.js";
+
+test("TEAM026历史系统退出证据必须重验全部身份数量时间，不消费外来或旗标伪证据",()=>{
+  const evidence={runId:"R",role:"stop",clientAlgoId:"R-sl",symbol:"BTCUSDT",side:"SELL",sourceClientAlgoId:"R-sl",
+    sourceSymbol:"BTCUSDT",sourceSide:"SELL",sourcePositionSide:"BOTH",type:"STOP_MARKET",identityVerified:true,
+    status:"FINISHED",actualOrderId:"9200",actualQuantity:1,updateTime:200};
+  const run={id:"R",symbol:"BTCUSDT",plan:{entrySide:"BUY",exitSide:"SELL",clientIds:{entry:"R-entry",stop:"R-sl"}},
+    entryOrder:{symbol:"BTCUSDT",side:"BUY",clientOrderId:"R-entry",orderId:"11",createdTime:100,updateTime:100,status:"FILLED",executedQuantity:1},
+    protection:{observations:{stop:{executionEvidence:evidence}}},result:{exchangeTimeBasis:{source:"EXCHANGE_SERVER_TIME",upperBound:200},trades:[{id:"66",orderId:"9200",symbol:"BTCUSDT",side:"SELL",quantity:1,price:10,time:200}]}};
+  assert.equal(verifiedProtectionExitOrders(run).length,1);assert.equal(ownedExitFills(run).length,1);
+  for(const change of [{runId:"other"},{role:"breakEvenStop"},{clientAlgoId:"other"},{sourceClientAlgoId:null},{sourceSymbol:"ETHUSDT"},
+    {sourceSide:"BUY"},{sourcePositionSide:"LONG"},{identityVerified:false},{status:"NEW"},{actualOrderId:"0"},{actualQuantity:0},
+    {actualQuantity:2},{actualQuantity:true},{updateTime:null},{updateTime:99},{updateTime:true},{updateTime:200.5},{updateTime:201},{type:"TAKE_PROFIT_MARKET"}]){
+    const bad=structuredClone(run);Object.assign(bad.protection.observations.stop.executionEvidence,change);
+    assert.equal(verifiedProtectionExitOrders(bad).length,0,JSON.stringify(change));assert.equal(ownedExitFills(bad).length,0);
+  }
+  for(const change of [{orderId:"external"},{time:201},{time:99},{quantity:0.5},{side:"BUY"},{symbol:"ETHUSDT"}]){
+    const bad=structuredClone(run);Object.assign(bad.result.trades[0],change);assert.equal(ownedExitFills(bad).length,0,JSON.stringify(change));
+  }
+  for(const basis of [undefined,null,{}, {source:"LOCAL_TIME",upperBound:200}, ...[null,true,0,199,200.5].map(upperBound=>({source:"EXCHANGE_SERVER_TIME",upperBound}))]){
+    const bad=structuredClone(run);bad.result.exchangeTimeBasis=basis;
+    assert.equal(verifiedProtectionExitOrders(bad).length,0,JSON.stringify(basis));assert.equal(ownedExitFills(bad).length,0);
+  }
+});
 
 test("TEAM018共享终态谓词保持执行器原五态及非终态语义",()=>{
   for(const status of ["FILLED","CANCELED","EXPIRED","EXPIRED_IN_MATCH","REJECTED"])assert.equal(isTerminalOrder(status),true,status);

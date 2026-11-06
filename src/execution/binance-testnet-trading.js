@@ -480,7 +480,17 @@ export class BinanceTestnetTradingClient {
   async queryAlgoOrder(clientAlgoId) {
     assertClientId(clientAlgoId, "clientAlgoId");
     try {
-      return normalizeAlgoOrder(await this.signedRequest("GET", "/fapi/v1/algoOrder", { clientAlgoId }));
+      const raw = await this.signedRequest("GET", "/fapi/v1/algoOrder", { clientAlgoId });
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("条件单查询成功响应无效，结果未知");
+      const order = normalizeAlgoOrder(raw);
+      if (!/^[1-9][0-9]*$/.test(order.algoId) || order.clientAlgoId !== clientAlgoId
+        || !this.allowedSymbols.has(order.symbol) || !["BUY", "SELL"].includes(order.side)
+        || !["STOP_MARKET", "TAKE_PROFIT_MARKET", "STOP", "TAKE_PROFIT", "TRAILING_STOP_MARKET"].includes(order.type)
+        || !["NEW", "PENDING", "TRIGGERING", "TRIGGERED", "FINISHED", "CANCELED", "REJECTED", "EXPIRED", "EXPIRED_IN_MATCH"].includes(order.status)
+        || (order.positionSide && !["BOTH", "LONG", "SHORT"].includes(order.positionSide))) {
+        throw new Error("条件单查询身份或状态无效，结果未知");
+      }
+      return order;
     } catch (error) {
       if (error instanceof BinanceApiError && [-2011, -2013].includes(error.apiCode)) return null;
       throw error;

@@ -1,13 +1,15 @@
 import { classifyExecutionAccountState } from "./execution-account-ownership.js";
 import { isMultiPositionPolicy, positionPolicyKnown, accountProtectionFactsKnown, blocksNewExecutionEntry } from "./protection-state.js";
 
-export function assessTestnetReadiness({ account, gateway, credentialsConfigured = false, permissionProbe = null, activeRuns = [] } = {}) {
+export function assessTestnetReadiness({ account, gateway, credentialsConfigured = false, permissionProbe = null, activeRuns = [], executionRuntime = null } = {}) {
   const multiPosition = isMultiPositionPolicy(gateway);
   const onDemandPermissionCheck = gateway?.orderSubmissionEnabled === true
     && gateway?.permissionCheckMode === "ORDER_TEST_PER_SIGNAL"
     && credentialsConfigured;
   const ownership = multiPosition ? classifyExecutionAccountState(account, activeRuns) : null;
   const checks = [
+    { code: "EXECUTION_RUNTIME_READY", passed: executionRuntime === null || (executionRuntime?.known === true && executionRuntime?.active === false),
+      message: "执行对账运行故障必须通过完整新对账后才能准备新入场" },
     { code: "ACCOUNT_FACTS_CONFIRMED", passed: accountProtectionFactsKnown(account),
       message: "账户来源、持仓方向数量和订单分页必须完整确认" },
     { code: "EXECUTION_SAFETY_HOLD", passed: !activeRuns.some(blocksNewExecutionEntry),

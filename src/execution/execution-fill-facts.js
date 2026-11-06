@@ -31,12 +31,46 @@ export function entryFillTimeMatches(run, fill) {
     && (!terminal || !updated || time <= updated);
 }
 
+// Historical system stop observations are usable only with their complete
+// original identity and exchange-time bounds. A flag alone grants no ownership.
+export function verifiedProtectionExitOrders(run, timeBasis = run.result?.exchangeTimeBasis) {
+  const start = entryOrderTimeFacts(run).startTime;
+  const entryQuantity = positive(run.entryOrder?.executedQuantity);
+  const upperBound = timeBasis?.source === "EXCHANGE_SERVER_TIME" ? exchangeTimestamp(timeBasis.upperBound) : null;
+  if (!start || !entryQuantity || !upperBound || start > upperBound) return [];
+  const orders = ["stop", "breakEvenStop"].flatMap(role => {
+    const e = run.protection?.observations?.[role]?.executionEvidence;
+    const quantity = e && typeof e.actualQuantity !== "boolean" ? positive(e.actualQuantity) : null;
+    const updated = exchangeTimestamp(e?.updateTime);
+    if (!e || e.identityVerified !== true || e.runId !== run.id || e.role !== role
+      || !run.plan?.clientIds?.[role] || e.clientAlgoId !== run.plan.clientIds[role]
+      || e.sourceClientAlgoId !== e.clientAlgoId || e.symbol !== run.symbol || e.sourceSymbol !== run.symbol
+      || e.side !== run.plan?.exitSide || e.sourceSide !== run.plan?.exitSide
+      || e.type !== "STOP_MARKET" || ![undefined, null, "BOTH"].includes(e.sourcePositionSide)
+      || e.status !== "FINISHED" || !/^[1-9][0-9]*$/.test(String(e.actualOrderId ?? ""))
+      || !quantity || quantity > entryQuantity && !close(quantity, entryQuantity) || !updated || updated < start || updated > upperBound) return [];
+    return [{ role, symbol: run.symbol, side: run.plan.exitSide, type: e.type,
+      clientAlgoId: e.clientAlgoId, status: e.status, actualOrderId: String(e.actualOrderId),
+      actualQuantity: quantity, updateTime: updated }];
+  });
+  return orders.filter(order => orders.filter(other => other.actualOrderId === order.actualOrderId).length === 1);
+}
+
 export function ownedExitFills(run, result = run.result) {
+  const historical = verifiedProtectionExitOrders(run, result?.exchangeTimeBasis ?? null);
+  const invalidHistory = new Set(historical.filter(order => {
+    const fills = (result?.trades ?? []).filter(t => String(t.orderId) === order.actualOrderId);
+    return !close(fills.reduce((sum, t) => sum + (positive(t.quantity) ?? 0), 0), order.actualQuantity)
+      || fills.some(t => exchangeTimestamp(t.time) === null || Number(t.time) < entryOrderTimeFacts(run).startTime
+        || Number(t.time) > order.updateTime);
+  }).map(order => order.actualOrderId));
   const ids = new Set([run.operatorCloseOrder?.orderId,
-    ...Object.values(run.protection ?? {}).flatMap(o => o && typeof o === "object" ? [o.actualOrderId, o.orderId] : [])
+    ...Object.values(run.protection ?? {}).flatMap(o => o && typeof o === "object" ? [o.actualOrderId, o.orderId] : []),
+    ...historical.map(o => o.actualOrderId)
   ].filter(v => v !== null && v !== undefined && v !== "" && String(v) !== "0").map(String));
   const seen = new Set();
   return (result?.trades ?? []).filter(t => {
+    if (invalidHistory.has(String(t.orderId))) return false;
     if (!ids.has(String(t.orderId)) || t.side !== run.plan?.exitSide || (t.symbol && t.symbol !== run.symbol)) return false;
     const quantity = positive(t.quantity), price = positive(t.price), quote = number(t.quoteQuantity);
     if (!quantity || !price || (quote !== null && !close(quote, quantity * price))) return false;

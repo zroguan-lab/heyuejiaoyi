@@ -7,6 +7,16 @@ const safeGateway = {
   orderSubmissionEnabled: false,
 };
 
+test("TEAM026C运行故障或未知状态阻断准备，完整新对账恢复不改变正常pending并行", () => {
+  const account = { environment: "TESTNET", authority: "BINANCE_TESTNET", enabled: true, connected: true,
+    account: { canTrade: true }, positionMode: "ONE_WAY", positions: [], openOrders: [], openAlgoOrders: [] };
+  for (const executionRuntime of [{ known: true, active: true }, {}, { known: false }, { known: true, active: false }]) {
+    const result = assessTestnetReadiness({ account, gateway: safeGateway, credentialsConfigured: true,
+      activeRuns: [{ id: "pending", status: "ENTRY_PENDING" }], executionRuntime });
+    assert.equal(result.canPrepareCanary, executionRuntime.known === true && executionRuntime.active === false);
+  }
+});
+
 test("TEAM016未知政策与缺失账户事实不能推定准备就绪",()=>{
   const account={environment:"TESTNET",authority:"BINANCE_TESTNET",enabled:true,connected:true,account:{canTrade:true},positionMode:"ONE_WAY",positions:[],openOrders:[],openAlgoOrders:[]};
   for(const snapshot of [{...account,authority:undefined},{...account,openAlgoOrders:undefined},{}]){

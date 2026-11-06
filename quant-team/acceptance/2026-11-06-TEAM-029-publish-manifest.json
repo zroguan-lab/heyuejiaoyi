@@ -1,0 +1,598 @@
+{
+  "task": "TEAM-029",
+  "kind": "GIT_ARCHIVE_ONLY",
+  "branch": "codex/team-029-reliability",
+  "baseCommit": "66f2541bc4195bcdaf1fb2635b29fb4b2e286fb8",
+  "status": "OFFLINE_VERIFIED_NOT_DEPLOYED",
+  "strategy": "V2.4.3_UNCHANGED",
+  "strategyDecision": "PENDING",
+  "gitTextConvention": "LF",
+  "sourceManifestSha256": "ce4b8b85059000947c39dfdf49f628462b673206bc0a7f762859f2992aa2b7e3",
+  "tests": {
+    "independentTargeted": 152,
+    "independentFull": 445,
+    "commanderFull": 445
+  },
+  "excluded": [
+    "unconfirmed V2.4.4 draft",
+    "factor research wiring",
+    "runtime databases/backups/logs",
+    "credentials",
+    "raw account responses",
+    "individual account trade ledger"
+  ],
+  "files": [
+    {
+      "path": "package.json",
+      "sha256LF": "9132eca4d734a2d1723643dd93d1565249efbc98c7e9ab4e7a7511959795eb4d"
+    },
+    {
+      "path": "public/app.js",
+      "sha256LF": "eecfcd39e2a67e0c993ce1fec43315e4c8ae7afed48c8a2865b8b44a88ea501d"
+    },
+    {
+      "path": "public/index.html",
+      "sha256LF": "53d58768032455cc91b5a6e9661b22744a3be60793fe7f25ba8c2b4dd308c059"
+    },
+    {
+      "path": "public/style.css",
+      "sha256LF": "ee1b8b3a3dd78f81a22a67704454d9b7eb5f8c1ac8adeda2da92641e5eee42cc"
+    },
+    {
+      "path": "quant-team/research/TEAM-006-volume-confirmation-protocol.json",
+      "sha256LF": "42211882e22223414eca34a3c98e6becdc1b2d12d92aa1be19fec7cb910ceddf"
+    },
+    {
+      "path": "scripts/backfill-historical-universe.js",
+      "sha256LF": "cbe12b1c69909080713bcc7b4a6002c6ee52542b90e588ccc6b4fbd8d960ed49"
+    },
+    {
+      "path": "scripts/catchup-historical-universe.js",
+      "sha256LF": "7acff07058f4b092dc56dc8febc86a0821a8c5dfec0bef549f885a6159bc37bb"
+    },
+    {
+      "path": "scripts/close-live-strategy-run.js",
+      "sha256LF": "d6a1540585032d29cfb5fc66d5f7cfe68999a80883bb542d1c9d6b59ccce74ff"
+    },
+    {
+      "path": "scripts/collect-historical-facts.js",
+      "sha256LF": "2b88efa638b8eb445b24d6eea347af13dc60040b3dfa35fe7aaf039126d9d3bf"
+    },
+    {
+      "path": "scripts/continue-historical-pipeline.js",
+      "sha256LF": "454371d5e5ec54f4621b4488bc7920dd4cff83c28a825645f12d1b7bd4797a21"
+    },
+    {
+      "path": "scripts/replay-v2-3-history.js",
+      "sha256LF": "71db3fe33423dd48fa54c7a124a94e333004301dd1eb475f1596728fb744a688"
+    },
+    {
+      "path": "scripts/replay-v2-3-portfolio.js",
+      "sha256LF": "edeb416b5c2db54a4a1779d68d7070aa92565585d99642ea589ce9d817e7fc7a"
+    },
+    {
+      "path": "scripts/report-v2-3-demo-baseline.js",
+      "sha256LF": "84058c6e305b805ef07e0376069097dbef51602085e0f36dcd6754a1c0932d76"
+    },
+    {
+      "path": "scripts/rotate-demo-account-epoch.js",
+      "sha256LF": "25778ab4c2d2ae280148fedd67eca1aa7ea2367d45ff2a8a7b00e86ee5197956"
+    },
+    {
+      "path": "scripts/show-toast.ps1",
+      "sha256LF": "f06f0d761ada6bb4cacfe32c7755d49d3e67a915b5c47dd8f7f56985a8fad3fc"
+    },
+    {
+      "path": "scripts/show-v2-3-strategy-snapshot.js",
+      "sha256LF": "2a358b1b9ba9897a38115c7c24c15745cc1ae1b325db9873beccefce2d0de383"
+    },
+    {
+      "path": "scripts/sync-historical-data.js",
+      "sha256LF": "5b07813ce0963d82884bd3ab4b5ddff2dbac928a3d735d7209d63471f32cad92"
+    },
+    {
+      "path": "scripts/validate-v2-3-history.js",
+      "sha256LF": "943ff175c38d0a071bd6cec71369e579bdbc0ee9cfb5421e2a02325fc893aaaf"
+    },
+    {
+      "path": "src/application/monitor.js",
+      "sha256LF": "4282629902326cee87dccda3484794be911477acd7ac97e8cc7cf17aa34e91a8"
+    },
+    {
+      "path": "src/application/research-monitor.js",
+      "sha256LF": "4fe119db7ea5b035a123cfe832bdbe2dc476b50fbf7bfa356bb21c7c2430ed63"
+    },
+    {
+      "path": "src/application/strategy-execution-coordinator.js",
+      "sha256LF": "b7a6d86b14a550dd27b1b7ec03dc6fe28318ee6b82ff400c7b568a3a65edf3f1"
+    },
+    {
+      "path": "src/application/testnet-account-monitor.js",
+      "sha256LF": "a290d28a7281a6b5f0c445038ece7c9ee98913e8ec21453c6c24a0b397109f9d"
+    },
+    {
+      "path": "src/backtest.js",
+      "sha256LF": "6dbdf4f17f628f2d67a950e42735658ee77c82fe2076a1eda085a63f5b5ade50"
+    },
+    {
+      "path": "src/config.js",
+      "sha256LF": "bcbf14713fdd1972c582bf0894bf576fe3bd89ca6d8abfaf3e154a51100a40b7"
+    },
+    {
+      "path": "src/domain/decision-snapshot.js",
+      "sha256LF": "fab9fa05fc8a607c43a1def737fe799269062f1de560b4c20863a5ab18005961"
+    },
+    {
+      "path": "src/domain/indicators.js",
+      "sha256LF": "35b07a4d93d7179c772967f5778f2ca1b3b1df2b868f3f0d1d4f06f325f9a4dd"
+    },
+    {
+      "path": "src/domain/market-radar.js",
+      "sha256LF": "5763f18b77c995195e66afbc2380b398ab090dea656c398eff7ba7f43448af72"
+    },
+    {
+      "path": "src/domain/market-regime.js",
+      "sha256LF": "fef9955fc4478b679ef1c15ca4c6cbe175dbeae09d5f919eb09c3415eec69ebb"
+    },
+    {
+      "path": "src/domain/market-structure.js",
+      "sha256LF": "c9bdf89c73475a7efe6d03e50ff20004ebae394b9f93677766b547ec7ded2248"
+    },
+    {
+      "path": "src/domain/multi-timeframe-strategy.js",
+      "sha256LF": "e55ed3b852a584b89a4d5eef766ad449f4f746933ddfe2e9c774898559ddf352"
+    },
+    {
+      "path": "src/domain/portfolio.js",
+      "sha256LF": "70ec97618c94d4d6fe23ab0f1d989536a14ca011ccb8c1bd45a3e8ba2ce70264"
+    },
+    {
+      "path": "src/domain/pre-move-strategy.js",
+      "sha256LF": "cc5d1c28a87c27401c0ef718be90e7af83435b70be86373629e63556d10f2b8a"
+    },
+    {
+      "path": "src/domain/risk.js",
+      "sha256LF": "720e55edb0413506a4617f96de9098581da13617f40e2abf6e7ace16cf5a0718"
+    },
+    {
+      "path": "src/domain/shadow-v2.js",
+      "sha256LF": "aaa93be234fee661ce745e8f51e1ef5529b41dc525643e19c38db795f86448f3"
+    },
+    {
+      "path": "src/domain/strategy.js",
+      "sha256LF": "25c150d7141229166438f57c019ee8f9620eca4e79296ebf6b7dd9d8fa3d24f1"
+    },
+    {
+      "path": "src/domain/trade-excursion.js",
+      "sha256LF": "f9db253e6c483b870acaf889d085769a7a66912e267038b58648bddb47f93416"
+    },
+    {
+      "path": "src/domain/trade-lifecycle.js",
+      "sha256LF": "1dbf8e10b3d29743238f7a42e3d215134b0a49e67e6a565802513aa14bf0192d"
+    },
+    {
+      "path": "src/domain/trade-reason.js",
+      "sha256LF": "67e80c4b714a943f6459fd521d9f5bcdc74d5bfc420fd8bcd7ab3c6d206d467e"
+    },
+    {
+      "path": "src/domain/v2-3-strategy-engine.js",
+      "sha256LF": "7ab22d7015415080b0f58f8176c408f2724e278f490c8241084dd815784a6c33"
+    },
+    {
+      "path": "src/domain/v2-4-strategy-engine.js",
+      "sha256LF": "90b45968296283f1c3664ef77184c7f2480daa78a7c4a2887ed8522d358f93fa"
+    },
+    {
+      "path": "src/env.js",
+      "sha256LF": "8ed6bcc6a379eaef24e22b51ca5ed00f563510aab59f330fb96ecb156a35af36"
+    },
+    {
+      "path": "src/exchanges/binance-futures.js",
+      "sha256LF": "ce0afc34e7a89fea7959cf8cf3b6bc70fac020dbfff73d5ce23e82791d24387e"
+    },
+    {
+      "path": "src/exchanges/binance-rate-limit.js",
+      "sha256LF": "cdad096e637697c30e806f9857196cb10f23c7af0fe5825f5690c509ef874172"
+    },
+    {
+      "path": "src/exchanges/create-client.js",
+      "sha256LF": "5deca59231ec0d26d4b43b71c0697a3fb8531fe610fd2e4f3fa312fae8941e12"
+    },
+    {
+      "path": "src/exchanges/hyperliquid-futures.js",
+      "sha256LF": "07c0b95d5274dbaf2b7fb3a4ad022d5daa11eae7e003e08ae29a0e15abba6760"
+    },
+    {
+      "path": "src/exchanges/network-error.js",
+      "sha256LF": "a8d1d53c6fb1cf6cfe4255dc2145b353dcede7cbfe9dad423a324e274f197378"
+    },
+    {
+      "path": "src/exchanges/okx-futures.js",
+      "sha256LF": "622ec2b5e11abf8775360bef885c45b29b11b2b21002c06d068c33cadb18568a"
+    },
+    {
+      "path": "src/execution/binance-position.js",
+      "sha256LF": "41468445c791668c72b2fa5c3c37929b7297e72441cddf10c7cfccb6be95c1e4"
+    },
+    {
+      "path": "src/execution/binance-testnet-readonly.js",
+      "sha256LF": "1e2d85b02d0824ec1ae7102d103544588ccb0af7bc39780393aa593264066523"
+    },
+    {
+      "path": "src/execution/binance-testnet-trading.js",
+      "sha256LF": "22491ea86e8209c59015975f8d234b2ccd508d90859712b9b5fdec6cb7ae7764"
+    },
+    {
+      "path": "src/execution/canary-plan.js",
+      "sha256LF": "d789615cca3e3366991568a49f17e6e273612553b8c13794f86cfa55e5ebb102"
+    },
+    {
+      "path": "src/execution/contract-rules.js",
+      "sha256LF": "1e8429cc15019bc6076e44c9b6cacadb85ef3fcec927f7d16b0121f7ba9be9eb"
+    },
+    {
+      "path": "src/execution/demo-account-epoch-reset.js",
+      "sha256LF": "14cd17cf51997fa86cab26137d09581bb7ac0d6b4d7d1c8e05512a8259d7cf03"
+    },
+    {
+      "path": "src/execution/entry-fact-process-lock.js",
+      "sha256LF": "8433eb9ece22da75ab2567c9cdd7a4f320cbbe0bb56c162948b9c2737875b81d"
+    },
+    {
+      "path": "src/execution/entry-order-policy.js",
+      "sha256LF": "8428958bd22b10091ef2b418f4c98154490846533e1174ceeb68f11298a86e35"
+    },
+    {
+      "path": "src/execution/execution-account-ownership.js",
+      "sha256LF": "6db347804b737daff4941976dc5a55019ae74cea7577ef7ce605febe2ab7b836"
+    },
+    {
+      "path": "src/execution/execution-fill-facts.js",
+      "sha256LF": "a323b4536948cb6735f214c2fabd45f0c184862eb7a5c0b3f29e40708443918f"
+    },
+    {
+      "path": "src/execution/execution-run-projection.js",
+      "sha256LF": "fd3504a594a30bc3c4ff2d599967cff0d4f6f86c14b0898ca2f02cc80c439b24"
+    },
+    {
+      "path": "src/execution/execution-strategy-source.js",
+      "sha256LF": "eb5c4ddff8e68af91b943472a0c1dd9f0b605209bc09f1e133e54e4951e85fe1"
+    },
+    {
+      "path": "src/execution/execution-symbols.js",
+      "sha256LF": "4c7041e7be5da12bb461db2f9f4996b7a17d99bd77534cf0fe05294f43daa197"
+    },
+    {
+      "path": "src/execution/order-permission.js",
+      "sha256LF": "ca06e3e3ebf2fba4097f346e92fbb2aed4a5e1f3ce59856d83234497226c8aef"
+    },
+    {
+      "path": "src/execution/protection-state.js",
+      "sha256LF": "3de2dc06cd5452cff12df63a2966f01a30481ecf901cbd39f7cf4b902c184012"
+    },
+    {
+      "path": "src/execution/readiness.js",
+      "sha256LF": "e288f8d8b6152e36c072852549da15af5fee0e6299568c37f262a2f077343a36"
+    },
+    {
+      "path": "src/execution/testnet-canary-executor.js",
+      "sha256LF": "6b93b35c373c2e27eb99b4192c3bece165dad68fa5f503460a062c84e465f9a9"
+    },
+    {
+      "path": "src/execution/testnet-execution-gateway.js",
+      "sha256LF": "f93641a5265417bbc73653cd8f0c8c2f02ef29ac7a47ca9f969fb1a844bf5438"
+    },
+    {
+      "path": "src/http/server.js",
+      "sha256LF": "e9c310309385ccbaf851e56ce7f901cc92cdc42146c1e8c9e8456e21a8838bdd"
+    },
+    {
+      "path": "src/index.js",
+      "sha256LF": "51c69cc2db0165faab9f165ce5900585f6112e668eb7efdb7e315be9fc31186d"
+    },
+    {
+      "path": "src/infrastructure/research-store.js",
+      "sha256LF": "e2e0ccac1d63ebd1305845711f59ef67235fd4a99fa962793a57f1ca71f831b5"
+    },
+    {
+      "path": "src/infrastructure/signal-store.js",
+      "sha256LF": "eca54fca6e0a59c78145a0b727aab5ebae0393f86a86ae9d8e58512df70eed18"
+    },
+    {
+      "path": "src/infrastructure/windows-notifier.js",
+      "sha256LF": "b01274b0352099c5adcf72cd0979dbd0ce06e2f926dbb4bd19214da4ad531b05"
+    },
+    {
+      "path": "src/presentation/research-attribution.js",
+      "sha256LF": "4a8244936ed25c3b81490b87abfe9b82241668b4f8723ae82815e854a6954505"
+    },
+    {
+      "path": "src/presentation/shadow-performance.js",
+      "sha256LF": "76313fea69dff31db6d8b781643f303b6090de9e7e24f920c7b1677e5daf7c03"
+    },
+    {
+      "path": "src/presentation/strategy-performance.js",
+      "sha256LF": "16f3a6505cd95ea00e2b122ff8e9c9f5c60feef5ee39552ee1de089722d92ca4"
+    },
+    {
+      "path": "src/research-backtest.js",
+      "sha256LF": "e3702db9ca8637e8e324a92900a3857f52322c7a081d7cdab29eb20e73e20d67"
+    },
+    {
+      "path": "src/research/historical-backfill-job.js",
+      "sha256LF": "f5c0cb115d968c0a9e47bb2ec52dbb5758461c98640010a3109e4ff84ee68ac9"
+    },
+    {
+      "path": "src/research/historical-binance-client.js",
+      "sha256LF": "617a45cbee319ec8357e0efc3acd11acbddabdf4a856c2416daa9e627f9715a3"
+    },
+    {
+      "path": "src/research/historical-catchup-job.js",
+      "sha256LF": "a38ea05992982f00d3b1667616b269adb1bd9d00ad98f2d19f2f78183074c93f"
+    },
+    {
+      "path": "src/research/historical-data-catalog.js",
+      "sha256LF": "f913457b338a39bcb6218f819b580f5ffba9c9415c93e9a1ec1f5d6d8c0e1c6b"
+    },
+    {
+      "path": "src/research/historical-data-sync.js",
+      "sha256LF": "01732ba948fc1c757541fc42aff6b40b1ecccd5f7e07d2961657bf856e3ace69"
+    },
+    {
+      "path": "src/research/historical-fact-collector.js",
+      "sha256LF": "2133b907d343985555b10ab3f6b598722d25d2c796845087545a7bf6f51771b6"
+    },
+    {
+      "path": "src/research/historical-job-runtime.js",
+      "sha256LF": "06a7581bc8c4dd3549f4cf6e991107f918b74d22a2fe2eefe5af98ceb97028c5"
+    },
+    {
+      "path": "src/research/historical-market-replay.js",
+      "sha256LF": "b605757d3efff2703e49619683bb99467761f08e212187b7e94e356b5bf7bb17"
+    },
+    {
+      "path": "src/research/historical-portfolio-replay.js",
+      "sha256LF": "34656d76626e160ee48ff7997f9cb462abacf3c66fc497c568927d8b029b108d"
+    },
+    {
+      "path": "src/research/single-variable-validation.js",
+      "sha256LF": "7618d0d35b57fc006a6faf55a7e4345a83377ab743073a7e730e606188269335"
+    },
+    {
+      "path": "src/research/v2-3-demo-baseline.js",
+      "sha256LF": "d33cc194d76292ef7082fd0cb30c6f60372ed6ace92121eb672f0f9c21c40a95"
+    },
+    {
+      "path": "src/research/v2-3-validation.js",
+      "sha256LF": "78d321586be0b9f481c38f53ed431f4994787accd25756bacc8b81119ecdc1c8"
+    },
+    {
+      "path": "src/scan-once.js",
+      "sha256LF": "43623e38c4a910785c4df1ca579c255abea1db262f0a806da13084b824cd4285"
+    },
+    {
+      "path": "src/testnet-canary.js",
+      "sha256LF": "73ab73dc3fbaa8190091be3aa03fc2c4d2f5ffca0a7edda74bebf0f6f8fdaf3c"
+    },
+    {
+      "path": "test/backtest.test.js",
+      "sha256LF": "c591a9d00500945e7a737e5ab3dc0f0099365aff7f9c5aa301f5f05f900590f0"
+    },
+    {
+      "path": "test/binance-testnet-readonly.test.js",
+      "sha256LF": "f83c0207fbf6da0d86796b46e7100ac2778b8b7099ae1df030c42237b760ae62"
+    },
+    {
+      "path": "test/binance-testnet-trading.test.js",
+      "sha256LF": "8ce37faeb7e88ad0e3dcd80930693d0baccf275b0fa9f9e1c48abb719c395acb"
+    },
+    {
+      "path": "test/canary-plan.test.js",
+      "sha256LF": "549504764040deadde2502a48a3bddde9d4ffc50f93e0790dbd5d8842f50c759"
+    },
+    {
+      "path": "test/contract-rules.test.js",
+      "sha256LF": "6f17f185ad8de910814da1338e09ff6660ec41c148757fa864591a29d1c5348d"
+    },
+    {
+      "path": "test/controlled-close-script.test.js",
+      "sha256LF": "5d2ecbf50f77dbedfabe36542c833c8fcc5c8f0df943fbdd9e598fc6aad63bd1"
+    },
+    {
+      "path": "test/dashboard-statistics.test.js",
+      "sha256LF": "971388b83b019668b0896a0e218d3a6ad95fd6d2895458350b63f2eee574797a"
+    },
+    {
+      "path": "test/decision-snapshot.test.js",
+      "sha256LF": "eaee5554110b731e7584aab516b4a82a672a5ae0d44f3ab7432a028210b84f12"
+    },
+    {
+      "path": "test/demo-account-epoch-reset.test.js",
+      "sha256LF": "93456dc2a9b38751bb951642337949617fdf99e7b541b04117d03ed0ac3d0659"
+    },
+    {
+      "path": "test/entry-order-policy.test.js",
+      "sha256LF": "b0bf485d4c77381682ae636c756c6f4cc3e93f127cfe88ce7cb9ad1f9f0c20ba"
+    },
+    {
+      "path": "test/env.test.js",
+      "sha256LF": "77c3ec1a52520e854ebc32d181f06e0e82e6b5712bbdc23380f5f5468239ca43"
+    },
+    {
+      "path": "test/exchange.test.js",
+      "sha256LF": "4aefd08298ff940509fc0b5764d3a7061dd38dc9731d04433ae7295509fe4d3d"
+    },
+    {
+      "path": "test/execution-account-ownership.test.js",
+      "sha256LF": "5ce18c7ec45099ff687b099c3fd1bdbdc5b549688aa9540ac130a9b567a4db8d"
+    },
+    {
+      "path": "test/execution-fill-facts.test.js",
+      "sha256LF": "b87daae26f7b7f921cd602403d83a455586b17155c51dfdbcffe4f4e1ff07954"
+    },
+    {
+      "path": "test/execution-readiness.test.js",
+      "sha256LF": "c4907a0fb2c382f20936b1990c3873f3fa1d628184916b9e6583838c6c85f45f"
+    },
+    {
+      "path": "test/execution-run-projection.test.js",
+      "sha256LF": "f295de5ced5e21cd80c4277c3bce71af4d0e9b3c39a345dc2af8e23297f27da4"
+    },
+    {
+      "path": "test/execution-strategy-source.test.js",
+      "sha256LF": "78097beb3f9733b2f70c4e1f9e3410e3ed4173adc15ba0cf72ba55ef6e857bcf"
+    },
+    {
+      "path": "test/execution-symbols.test.js",
+      "sha256LF": "aba0c647998df0b06be57ce7d407b29b0e1056ff77f797d31f53bc8fd49ade8d"
+    },
+    {
+      "path": "test/helpers.js",
+      "sha256LF": "e6b92bb9d61f70dcce1301aebeb62d4fe3f44d3d85b305d8d645e78625e524e6"
+    },
+    {
+      "path": "test/historical-data-catalog.test.js",
+      "sha256LF": "b535beb99e1c120d0e5677063764010ea6a1e1d24b818bce53789571b0a61b1d"
+    },
+    {
+      "path": "test/historical-market-replay.test.js",
+      "sha256LF": "462ae8a219cdc591bb26f6d5b5430dddc83318dd45f15159a3612446dc51fba4"
+    },
+    {
+      "path": "test/historical-pipeline.test.js",
+      "sha256LF": "45d709ad2faeee693a478f765b4fc679a72f11663a3842aabe5ae260f3d988f9"
+    },
+    {
+      "path": "test/historical-portfolio-replay.test.js",
+      "sha256LF": "35b170b7d5e8f8ae9e76821dc58377e0e2bd5d5aef2cfd09260c02fa1a0f9f86"
+    },
+    {
+      "path": "test/indicators.test.js",
+      "sha256LF": "72dcafc1fd4da76fa6404b43bbfd3578978dc9d8c0abc256ceee4bded64e8117"
+    },
+    {
+      "path": "test/market-radar.test.js",
+      "sha256LF": "e9baf02f8b7f7bbfab69ffad232d57568296461c7cad1af015af301fa9533cc1"
+    },
+    {
+      "path": "test/market-regime.test.js",
+      "sha256LF": "774b42f49eda9f0316b3d2120581772c13241071ed426552a6e01697e1baf3d4"
+    },
+    {
+      "path": "test/market-structure.test.js",
+      "sha256LF": "e9e021974fbe75fd1cfa7aa3298bfc86c64f27458861332200d152c88ceb27b0"
+    },
+    {
+      "path": "test/monitor.test.js",
+      "sha256LF": "66375d0dd6c663eed644cec4e4060b641f52450daa1a64081fdfd07ddbb70b42"
+    },
+    {
+      "path": "test/multi-timeframe-strategy.test.js",
+      "sha256LF": "02492994b3912fb964f77c378d77afbc293ce3c62c380a5beab16d3c202338ad"
+    },
+    {
+      "path": "test/order-permission.test.js",
+      "sha256LF": "083e87e7c7ddfbb3aab2f948d50aa3c61f819061f6e5aabf2e374ae3b7fc21ff"
+    },
+    {
+      "path": "test/portfolio.test.js",
+      "sha256LF": "35044d1af99484b0f0f77f82405f12ce47178dc39645ffe595c9e50b1636a2b5"
+    },
+    {
+      "path": "test/pre-move-strategy.test.js",
+      "sha256LF": "fdf97772205782d3854c2e3a2630d408c7869d8f28a6f5796a0c55635977f091"
+    },
+    {
+      "path": "test/protection-state.test.js",
+      "sha256LF": "69fff0f3c58bc28c7d3a8495d8586dd7ae707e44333cf8c186433bb62ce62aba"
+    },
+    {
+      "path": "test/research-attribution.test.js",
+      "sha256LF": "6054ced06abdc12d0e3ae88e20722f37717e204f43693079fa9c3e39202151f3"
+    },
+    {
+      "path": "test/research-backtest.test.js",
+      "sha256LF": "c3141ee467b51c9818cd05d5e71844a098432a11a48da0676114228cb26cdb5d"
+    },
+    {
+      "path": "test/research-monitor.test.js",
+      "sha256LF": "5919dbd21be12d49da630a01c54911e5415f638572eab797e99c34963759329f"
+    },
+    {
+      "path": "test/research-store.test.js",
+      "sha256LF": "9676e2dccd8647c2e6ca7b039b104fd69b9d41970a99378055a5e49cd321da6d"
+    },
+    {
+      "path": "test/risk.test.js",
+      "sha256LF": "fa9ac6733eeb8c4e90e79ee0ba88960396d245aba130aab9a81c89bc81ad2be1"
+    },
+    {
+      "path": "test/server.test.js",
+      "sha256LF": "9f799a3cadd3df6c8cf975f10e99346462412fb5b4ce8a08bb309e1810e31956"
+    },
+    {
+      "path": "test/shadow-performance.test.js",
+      "sha256LF": "a9ac7464c4aa7f57d05f9f3fbfe6cfe7f9c8ae1427471b85e58f725955e75adb"
+    },
+    {
+      "path": "test/shadow-v2.test.js",
+      "sha256LF": "ee3fcd634031849ab7e0e09d5cd1dd17342e7634c402db6cabc53ac811ce38f6"
+    },
+    {
+      "path": "test/single-variable-validation.test.js",
+      "sha256LF": "8ea692fd2ebd2e12e903bb9f4516cfbe8d2dbfcff587550f776bbf75a43598dd"
+    },
+    {
+      "path": "test/strategy-execution-coordinator.test.js",
+      "sha256LF": "69538164991bd0d44d0068424bf2e184b596ece53d06fb7d351cc0b35be0ee5f"
+    },
+    {
+      "path": "test/strategy-performance.test.js",
+      "sha256LF": "a3aa2f01a6324621eb8748d9c47e2c24aea9a82f39e9c58cb8e096c4e6d38dc9"
+    },
+    {
+      "path": "test/strategy.test.js",
+      "sha256LF": "6f0bc5b0eed1cc74be01e8eedade075d5faedf1dc9b47f6213db21df4d38d766"
+    },
+    {
+      "path": "test/team-011-accounting.test.js",
+      "sha256LF": "4f4ae83a8709c4f9ddee9c83481cb67c5cefcff82753f1b4820cfaf69c9f6ec0"
+    },
+    {
+      "path": "test/team-011-process-lock.test.js",
+      "sha256LF": "03d98c4673088c6f282597ed6a90012b8424bff7213ecf3919e954d321d351ba"
+    },
+    {
+      "path": "test/testnet-account-monitor.test.js",
+      "sha256LF": "ea7d25bb8474a74183d8b2688f0eda815ff5833e359103a704395114881a79c7"
+    },
+    {
+      "path": "test/testnet-canary-cleanup.test.js",
+      "sha256LF": "043ab78a93eba90e6a2e96cb2ba8824a2e49edc2d04357216c5ff73e595c1ca6"
+    },
+    {
+      "path": "test/testnet-canary-executor.test.js",
+      "sha256LF": "82930da86c34e7559db214623e25e9c92a41080e0e96b647b8efdddc0df32ed4"
+    },
+    {
+      "path": "test/trade-lifecycle.test.js",
+      "sha256LF": "7e4770fb71691b33078a15a588c7a2016da33efa063b662c97b0edeecb0f04dd"
+    },
+    {
+      "path": "test/v2-3-demo-baseline.test.js",
+      "sha256LF": "5f38bb9167803b79159b7c51ea9c789a1a342cb02d6c9cd36bbd71aa0e6e08bf"
+    },
+    {
+      "path": "test/v2-3-strategy-engine.test.js",
+      "sha256LF": "27b74c79027b52ee76736606e2f02448196b738d331cb00f32f8898ac65d8f61"
+    },
+    {
+      "path": "test/v2-3-validation.test.js",
+      "sha256LF": "22bd1f8a10586b62856e5b67768421ee84959504985f91221ffc18f179bd3527"
+    },
+    {
+      "path": "test/windows-notifier.test.js",
+      "sha256LF": "64cce4b2ccab9d87aac55f8c28e74e8b56c7e77ecfb8c9fae75829296d8a25e9"
+    }
+  ]
+}
