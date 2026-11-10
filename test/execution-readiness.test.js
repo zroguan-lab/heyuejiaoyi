@@ -1,4 +1,11 @@
 import test from "node:test";
+
+test("TEAM031 maintenance is independent of recovered runtime and blocks readiness", () => {
+  const result = assessTestnetReadiness({ executionRuntime: { known: true, active: false, maintenance: { active: true } } });
+  assert.equal(result.canPrepareCanary, false);
+  assert.equal(result.checks.find(check => check.code === "EXECUTION_RUNTIME_READY").passed, true);
+  assert.equal(result.checks.find(check => check.code === "MAINTENANCE_ENTRY_ADMISSION").passed, false);
+});
 import assert from "node:assert/strict";
 import { assessTestnetReadiness } from "../src/execution/readiness.js";
 

@@ -2,7 +2,7 @@ import { isExecutionSymbol } from "./execution-symbols.js";
 import { executionFillFacts, executionExcursionFacts, ownedExitFills } from "./execution-fill-facts.js";
 import { V1_EXECUTION_SOURCE } from "./execution-strategy-source.js";
 
-const CLOSED_STATUSES = new Set(["CLOSED", "CANCELED", "REJECTED", "FAILED"]);
+const CLOSED_STATUSES = new Set(["CLOSED", "CANCELED", "REJECTED", "FAILED", "FACT_CONFLICT_TERMINAL"]);
 
 function finiteNumber(value) {
   if (value === null || value === undefined || value === "") return null;
@@ -29,6 +29,16 @@ function tradeTime(trade) {
 
 export function projectExecutionRun(run, signalRecord = null) {
   if (!run?.id || !isExecutionSymbol(run.symbol) || !run.plan) return null;
+  if(run.status==='FACT_CONFLICT_TERMINAL'||run.terminalClassification)return {
+    id:run.id,signalId:run.signalId,symbol:run.symbol,sourceType:run.sourceType??'SIGNAL',
+    executionSource:run.executionSource??run.plan.executionSource,strategy:run.plan.strategy,strategyVersion:run.plan.strategyVersion,
+    signalModelVersion:run.plan.signalModelVersion,status:'FACT_CONFLICT_TERMINAL',rawStatus:run.rawStatus??run.status,
+    terminal:true,terminalClassification:run.terminalClassification,performanceEligible:false,learningEligible:false,executionQuality:'CONFLICT',
+    direction:run.plan.direction,quantity:null,entryPrice:null,exitPrice:null,actualRisk:null,riskAmount:null,
+    realizedPnl:null,unrealizedPnl:null,commission:null,fundingPnl:null,netPnl:null,netR:null,mfeR:null,maeR:null,
+    accountingComplete:false,exitOrderId:null,exitOrderIds:[],resultReason:'FACT_CONFLICT_TERMINAL',
+    createdAt:finiteNumber(run.createdAt),updatedAt:finiteNumber(run.updatedAt)
+  };
   const trades = Array.isArray(run.result?.trades) ? run.result.trades : [];
   const facts = executionFillFacts(run);
   const excursion = executionExcursionFacts(run, facts);
@@ -86,6 +96,10 @@ export function projectExecutionRun(run, signalRecord = null) {
     executionSource: run.executionSource ?? run.plan.executionSource ?? V1_EXECUTION_SOURCE,
     signalDriven,
     performanceEligible: entryConflict ? false : run.performanceEligible ?? signalDriven,
+    learningEligible: run.learningEligible ?? null,
+    executionQuality: run.executionQuality ?? 'UNKNOWN',
+    forwardWindowId: run.forwardWindowId ?? null,
+    performanceEpochId: run.performanceEpochId ?? null,
     strategy: run.plan.strategy ?? strategy,
     strategyVersion: run.plan.strategyVersion ?? candidate?.strategyVersion ?? null,
     signalModelVersion: run.plan.signalModelVersion ?? candidate?.signalModelVersion ?? null,

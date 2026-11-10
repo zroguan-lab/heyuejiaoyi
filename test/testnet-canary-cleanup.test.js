@@ -1,10 +1,26 @@
 import test from "node:test";
+
+test("TEAM031 CLI awaits only its registered resource cleanup and never asks for account or reconcile", async () => {
+  let release, stopped = false, closed = false;
+  const gate = new Promise(r => { release = r; });
+  const executor = { async stop() { await gate; stopped = true; }, reconcile() { throw Error("must not reconcile"); } };
+  const pending = runWithCanaryCleanup({ close() { closed = true; } }, async register => { register(executor); return "original result"; });
+  await Promise.resolve(); assert.equal(closed, false);
+  release(); assert.equal(await pending, "original result"); assert.equal(stopped, true); assert.equal(closed, true);
+});
 import assert from "node:assert/strict";
 import { mkdtempSync,writeFileSync,existsSync,readFileSync,rmSync } from "node:fs";
 import { join,resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { runWithCanaryCleanup } from "../src/testnet-canary.js";
 import { TestnetCanaryExecutor } from "../src/execution/testnet-canary-executor.js";
+test("TEAM031 CLI preserves original action failure and reports independent cleanup failure", async () => {
+  const original = Error("action original"); let closed = false;
+  await assert.rejects(runWithCanaryCleanup({ close() { closed = true; } }, async register => {
+    register({ async stop() { throw Error("ownership conflict"); } }); throw original;
+  }), error => error === original && /ownership conflict/.test(error.cleanupError.message));
+  assert.equal(closed, true);
+});
 test("TEAM016 CLI成功/失败/未知命令统一释放自己锁且关闭Store",async t=>{
   const root=mkdtempSync(join(tmpdir(),"team016-cli-"));t.after(()=>rmSync(root,{recursive:true,force:true}));
   for(const outcome of ["success","failure","unknown"]){

@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { assertEntryAdmission, drainOperations, lifecycleStatus, storeRunLocks, trackMethods, trackOperation } from "./runtime-lifecycle.js";
 import { blocksNewExecutionEntry } from "../execution/protection-state.js";
 import { buildEntryReason } from "../domain/trade-reason.js";
 import { buildDecisionSnapshot, verifyDecisionSnapshot } from "../domain/decision-snapshot.js";
@@ -132,6 +133,22 @@ export class StrategyExecutionCoordinator extends EventEmitter {
     this.started = false;
     this.recoveryTimer = null;
     this.queue = Promise.resolve();
+    this.stopped = false;
+    this.stopGeneration = 0;
+    this.queued = 0;
+    this.runningTasks = 0;
+    trackMethods(this, store, { enqueue: "management", start: "management", sweep: "management" });
+    const trySignal = this.trySignal.bind(this);
+    this.trySignal = (signalId, ...args) => {
+      const signals = storeRunLocks(store).signals;
+      if (signals.has(signalId)) return signals.get(signalId);
+      let promise;
+      try { promise = trackOperation(store, this, "signal", () => trySignal(signalId, ...args), { lane: "entry" }); }
+      catch (error) { return Promise.reject(error); }
+      promise = promise.finally(() => { if (signals.get(signalId) === promise) signals.delete(signalId); });
+      signals.set(signalId, promise);
+      return promise;
+    };
     this.lastDecision = null;
     this.signalEvent = this.strategySource === V2_EXECUTION_SOURCE ? "shadowSignal" : "portfolioSignal";
     this.onStrategySignal = ({ candidate } = {}) => this.enqueueSignal(candidate?.id, this.signalEvent === "shadowSignal" ? "V2_SHADOW_SIGNAL" : "PORTFOLIO_SIGNAL");
@@ -147,7 +164,15 @@ export class StrategyExecutionCoordinator extends EventEmitter {
   }
 
   enqueue(task) {
-    this.queue = this.queue.then(task, task).catch((error) => {
+    if (this.stopped || storeRunLocks(this.store).maintenance.active) return this.queue;
+    this.queued += 1;
+    const guarded = async () => {
+      this.queued -= 1;
+      if (this.stopped || storeRunLocks(this.store).maintenance.active) return this.recordDecision({ status: "SKIPPED", reason: "MAINTENANCE_PAUSED" });
+      this.runningTasks += 1;
+      try { return await task(); } finally { this.runningTasks -= 1; }
+    };
+    this.queue = this.queue.then(guarded, guarded).catch((error) => {
       this.logger.error(`[auto-execution] ${messageOf(error)}`);
       this.recordDecision({ status: "ERROR", reason: messageOf(error) });
     });
@@ -213,6 +238,8 @@ export class StrategyExecutionCoordinator extends EventEmitter {
       ? (await this.store.getMetadata("active_strategy_performance_epoch"))?.value ?? null : null;
     let prepared;
     try {
+      assertEntryAdmission(this.store);
+      if (this.stopped) return this.recordDecision({ status: "SKIPPED", signalId, reason: "MAINTENANCE_PAUSED" });
       prepared = await this.executor.prepare(signalId, { strategySource: this.strategySource });
     } catch (error) {
       const reason = messageOf(error);
@@ -302,6 +329,8 @@ export class StrategyExecutionCoordinator extends EventEmitter {
       captureTime: entrySnapshot.times.captureTime, planHash: prepared.run.planHash ?? null,
     }, this.now());
     this.recordDecision({ status: "SUBMITTING", signalId, trigger, runId: prepared.run.id, symbol: prepared.run.symbol });
+    assertEntryAdmission(this.store);
+    if (this.stopped) return this.recordDecision({ status: "SKIPPED", signalId, reason: "MAINTENANCE_PAUSED" });
     const run = await this.executor.execute(prepared.run.id, prepared.confirmationCode);
     return this.recordDecision({ status: "SUBMITTED", signalId, trigger, runId: run.id, symbol: run.symbol, executionStatus: run.status });
   }
@@ -331,28 +360,33 @@ export class StrategyExecutionCoordinator extends EventEmitter {
     if (!eligible.length) return this.recordDecision({ status: "IDLE", trigger, reason: "NO_ELIGIBLE_SIGNAL" });
     let decision = null;
     for (const item of eligible) {
+      if (this.stopped || storeRunLocks(this.store).maintenance.active) break;
       decision = await this.trySignal(item.assessment.signalId, trigger);
     }
     return decision ?? this.recordDecision({ status: "IDLE", trigger, reason: "NO_EXECUTABLE_SIGNAL" });
   }
 
   async start() {
-    if (!this.enabled || this.started) return this.snapshot();
+    const generation = this.stopGeneration;
+    if (!this.enabled || this.started || this.stopped || storeRunLocks(this.store).maintenance.active) return this.snapshot();
     if (!this.executor.enabled) throw new Error("自动策略执行要求测试网订单写入锁已开启");
     this.started = true;
     this.monitor.on(this.signalEvent, this.onStrategySignal);
     this.executor.on("execution", this.onExecution);
     await this.enqueueSweep("STARTUP");
+    if (this.stopped || generation !== this.stopGeneration || storeRunLocks(this.store).maintenance.active) return this.snapshot();
     this.recoveryTimer = setInterval(() => this.enqueueSweep("PERIODIC_RECOVERY"), this.recoverySweepMs);
     this.recoveryTimer.unref?.();
     return this.snapshot();
   }
 
   async drain() {
-    await this.queue;
+    await drainOperations(this.store, { owner: this });
   }
 
-  stop() {
+  async stop() {
+    this.stopped = true;
+    this.stopGeneration += 1;
     if (this.recoveryTimer) clearInterval(this.recoveryTimer);
     this.recoveryTimer = null;
     if (this.started) {
@@ -360,11 +394,15 @@ export class StrategyExecutionCoordinator extends EventEmitter {
       this.executor.off("execution", this.onExecution);
     }
     this.started = false;
+    await this.drain();
   }
 
   snapshot() {
     return {
       enabled: this.enabled,
+      queued: this.queued,
+      running: this.runningTasks,
+      lifecycle: lifecycleStatus(this.store),
       status: !this.enabled ? "DISABLED" : this.started ? "WATCHING" : "STOPPED",
       strategySource: this.strategySource,
       signalEvent: this.signalEvent,

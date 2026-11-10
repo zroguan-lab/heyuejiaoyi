@@ -8,6 +8,8 @@ export function assessTestnetReadiness({ account, gateway, credentialsConfigured
     && credentialsConfigured;
   const ownership = multiPosition ? classifyExecutionAccountState(account, activeRuns) : null;
   const checks = [
+    { code: "MAINTENANCE_ENTRY_ADMISSION", passed: executionRuntime?.maintenance?.active !== true,
+      message: "维护暂停期间禁止新的执行入场" },
     { code: "EXECUTION_RUNTIME_READY", passed: executionRuntime === null || (executionRuntime?.known === true && executionRuntime?.active === false),
       message: "执行对账运行故障必须通过完整新对账后才能准备新入场" },
     { code: "ACCOUNT_FACTS_CONFIRMED", passed: accountProtectionFactsKnown(account),

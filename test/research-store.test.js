@@ -139,22 +139,24 @@ test("快照不从历史mutable行回填，重复初始化不产生前向样本"
   } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("两个Store连接的相同事件幂等、冲突拒绝；读回对损坏payload失败关闭", async () => {
+test("第二Store在受控串行交接后保持事件幂等、冲突拒绝；损坏payload失败关闭", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "snapshot-two-connections-"));
   const first = new ResearchStore(path.join(directory, "fixture.sqlite"));
   const second = new ResearchStore(first.filePath);
   try {
     await first.initialize();
-    await second.initialize();
+    await assert.rejects(second.initialize(), /单实例锁/);
     const args = { candidate: { id: "shared-s1", score: 60 }, decision: { decidedAt: 10 }, recordedAt: 11 };
     const s = buildDecisionSnapshot(args);
-    const saved = await Promise.all([first.appendDecisionSnapshot(s), second.appendDecisionSnapshot(structuredClone(s))]);
-    assert.deepEqual(saved[0], saved[1]);
-    assert.equal((await first.listDecisionSnapshots()).length, 1);
+    const saved = await first.appendDecisionSnapshot(s);
+    first.close();
+    await second.initialize();
+    assert.deepEqual(saved, await second.appendDecisionSnapshot(structuredClone(s)));
+    assert.equal((await second.listDecisionSnapshots()).length, 1);
     await assert.rejects(second.appendDecisionSnapshot(buildDecisionSnapshot({ ...args, candidate: { id: "shared-s1", score: 61 } })), /冲突/);
     // Deliberate fixture corruption bypassing the trigger simulates damaged storage, never production migration.
-    first.db.exec("DROP TRIGGER decision_snapshots_no_update");
-    first.db.prepare("UPDATE decision_snapshots SET payload=?").run(JSON.stringify({ ...s, symbol: "CORRUPTED" }));
+    second.db.exec("DROP TRIGGER decision_snapshots_no_update");
+    second.db.prepare("UPDATE decision_snapshots SET payload=?").run(JSON.stringify({ ...s, symbol: "CORRUPTED" }));
     await assert.rejects(second.getDecisionSnapshot(s.snapshotId), /完整性/);
     await assert.rejects(second.listDecisionSnapshots(), /完整性/);
   } finally {
@@ -425,7 +427,10 @@ test("旧版数据库仍有活动执行记录时拒绝多仓迁移且保留原�
 
   const store = new ResearchStore(databasePath);
   await assert.rejects(() => store.initialize(), /要求所有测试网执行记录先进入终态/);
-  const indexes = store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'execution_runs_%active%'").all().map((row) => row.name);
+  assert.equal(store.db,null);
+  const inspection=new DatabaseSync(databasePath,{readOnly:true});
+  const indexes = inspection.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'execution_runs_%active%'").all().map((row) => row.name);
+  inspection.close();
   assert.equal(indexes.includes("execution_runs_single_active_idx"), true);
   assert.equal(indexes.includes("execution_runs_one_active_symbol_idx"), false);
   store.close();

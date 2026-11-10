@@ -4,6 +4,10 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isExecutionSymbol } from "../execution/execution-symbols.js";
 import { buildDecisionSnapshot, verifyDecisionSnapshot } from "../domain/decision-snapshot.js";
+import { acquireStoreExecutionLease, borrowStoreExecutionLease, releaseStoreExecutionLease } from '../execution/entry-fact-process-lock.js';
+import { installMaintenanceSchema, effectiveExecutionRun, rejectClassifiedWrite } from '../execution/execution-maintenance.js';
+import { FORWARD_WINDOW_KEY, assessForwardLearning } from '../execution/forward-learning-window.js';
+import { assertStoreCloseSafe } from '../application/runtime-lifecycle.js';
 import {
   V1_EXECUTION_SOURCE,
   V2_EXECUTION_SOURCE,
@@ -30,7 +34,10 @@ export class ResearchStore {
   }
 
   async initialize() {
+    if(this.db)return;
     mkdirSync(path.dirname(this.filePath), { recursive: true });
+    acquireStoreExecutionLease(this);
+    try {
     this.db = new DatabaseSync(this.filePath);
     this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
     this.db.exec(`
@@ -140,21 +147,8 @@ export class ResearchStore {
         WHERE status NOT IN ('CLOSED', 'CANCELED', 'REJECTED', 'FAILED')
       `).get()?.count ?? 0);
       if (activeCount > 0) throw new Error("多仓数据库迁移要求所有测试网执行记录先进入终态");
-      this.db.exec(`
-        BEGIN IMMEDIATE;
-        DROP INDEX execution_runs_single_active_idx;
-        CREATE UNIQUE INDEX IF NOT EXISTS execution_runs_one_active_symbol_idx
-        ON execution_runs(symbol)
-        WHERE status NOT IN ('CLOSED', 'CANCELED', 'REJECTED', 'FAILED');
-        COMMIT;
-      `);
-    } else {
-      this.db.exec(`
-        CREATE UNIQUE INDEX IF NOT EXISTS execution_runs_one_active_symbol_idx
-        ON execution_runs(symbol)
-        WHERE status NOT IN ('CLOSED', 'CANCELED', 'REJECTED', 'FAILED');
-      `);
     }
+    installMaintenanceSchema(this.db);
     this.db.prepare(`
       INSERT INTO metadata(key, value, updated_at) VALUES('execution_schema_version', ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
@@ -163,6 +157,17 @@ export class ResearchStore {
       INSERT INTO metadata(key, value, updated_at) VALUES('shadow_schema_version', ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
     `).run(JSON.stringify({ version: 2, mode: "V2_1_DUAL_TIER", orderSubmissionAllowed: false, fixedPositionLimit: null }), Date.now());
+    } catch(error) { this.db?.close();this.db=null;releaseStoreExecutionLease(this);throw error; }
+  }
+
+  borrowExecutionLease() { return borrowStoreExecutionLease(this); }
+
+  executionObservation(run) {
+    const row=this.db.prepare('SELECT value FROM metadata WHERE key=?').get(FORWARD_WINDOW_KEY);
+    if(!row)return run;
+    const window=JSON.parse(row.value);
+    const saved=this.db.prepare("SELECT payload FROM decision_snapshots WHERE run_id=? AND scope='ENTRY_PRE_SUBMIT'").get(run.id);
+    return {...run,...assessForwardLearning(run,window,saved?JSON.parse(saved.payload):null)};
   }
 
   ensureReady() {
@@ -493,6 +498,7 @@ export class ResearchStore {
 
   async createExecutionRun(run) {
     this.ensureReady();
+    if(run?.status==='FACT_CONFLICT_TERMINAL')throw new Error('TERMINAL_CLASSIFICATION_REQUIRES_FORMAL_MAINTENANCE');
     if (!run?.id || !run?.signalId || !isExecutionSymbol(run?.symbol) || !run?.status) {
       throw new TypeError("执行记录格式不正确");
     }
@@ -505,15 +511,20 @@ export class ResearchStore {
       const existing = this.db.prepare("SELECT payload FROM execution_runs WHERE signal_id = ?").get(run.signalId);
       if (existing) {
         this.db.exec("COMMIT");
-        return { created: false, run: JSON.parse(existing.payload) };
+        return { created: false, run: this.executionObservation(effectiveExecutionRun(this.db,existing)) };
       }
       const activeRuns = this.db.prepare(`
         SELECT id, symbol, payload FROM execution_runs
-        WHERE status NOT IN ('CLOSED', 'CANCELED', 'REJECTED', 'FAILED')
+        WHERE maintenance_terminal=0 AND status NOT IN ('CLOSED', 'CANCELED', 'REJECTED', 'FAILED')
         ORDER BY created_at
       `).all().map((row) => ({ ...row, run: JSON.parse(row.payload) }));
       const sameSymbol = activeRuns.find((item) => item.symbol === run.symbol);
       if (sameSymbol) throw new Error(`标的 ${run.symbol} 已有未结束的测试网执行记录 ${sameSymbol.id}`);
+      const windowRow=this.db.prepare('SELECT value FROM metadata WHERE key=?').get(FORWARD_WINDOW_KEY);
+      if(windowRow) {
+        const window=JSON.parse(windowRow.value);
+        if(createdAt>=window.registeredAt)Object.assign(run,{forwardWindowId:window.id,performanceEpochId:window.epochId,executionQuality:'UNKNOWN',learningEligible:false});
+      }
       this.db.prepare(`
         INSERT INTO execution_runs(id, signal_id, symbol, status, created_at, updated_at, payload)
         VALUES(?, ?, ?, ?, ?, ?, ?)
@@ -543,7 +554,10 @@ export class ResearchStore {
 
   async saveExecutionRun(run) {
     this.ensureReady();
+    if(run?.status==='FACT_CONFLICT_TERMINAL')throw new Error('FACT_CONFLICT_TERMINAL_CANNOT_REOPEN');
     if (!run?.id || !run?.status || !Number.isFinite(Number(run.updatedAt))) throw new TypeError("执行记录格式不正确");
+    rejectClassifiedWrite(this.db,run.id);
+    run=this.executionObservation(run);
     const result = this.db.prepare("UPDATE execution_runs SET status = ?, updated_at = ?, payload = ? WHERE id = ?")
       .run(run.status, Number(run.updatedAt), JSON.stringify(run), run.id);
     if (result.changes !== 1) throw new Error(`找不到执行记录 ${run.id}`);
@@ -553,29 +567,29 @@ export class ResearchStore {
   async getExecutionRun(runId) {
     this.ensureReady();
     const row = this.db.prepare("SELECT payload FROM execution_runs WHERE id = ?").get(runId);
-    return row ? JSON.parse(row.payload) : null;
+    return row ? this.executionObservation(effectiveExecutionRun(this.db,row)) : null;
   }
 
   async getExecutionRunBySignal(signalId) {
     this.ensureReady();
     const row = this.db.prepare("SELECT payload FROM execution_runs WHERE signal_id = ?").get(signalId);
-    return row ? JSON.parse(row.payload) : null;
+    return row ? this.executionObservation(effectiveExecutionRun(this.db,row)) : null;
   }
 
   async listExecutionRuns(limit = 100) {
     this.ensureReady();
     const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 1000);
     return this.db.prepare("SELECT payload FROM execution_runs ORDER BY updated_at DESC LIMIT ?").all(safeLimit)
-      .map((row) => JSON.parse(row.payload));
+      .map((row) => this.executionObservation(effectiveExecutionRun(this.db,row)));
   }
 
   async listActiveExecutionRuns() {
     this.ensureReady();
     return this.db.prepare(`
       SELECT payload FROM execution_runs
-      WHERE status NOT IN ('CLOSED', 'CANCELED', 'REJECTED', 'FAILED')
+      WHERE maintenance_terminal=0 AND status NOT IN ('CLOSED', 'CANCELED', 'REJECTED', 'FAILED')
       ORDER BY created_at
-    `).all().map((row) => JSON.parse(row.payload));
+    `).all().map((row) => this.executionObservation(effectiveExecutionRun(this.db,row)));
   }
 
   async appendExecutionAudit(runId, eventType, payload = {}, createdAt = Date.now()) {
@@ -596,7 +610,9 @@ export class ResearchStore {
   }
 
   close() {
+    assertStoreCloseSafe(this);
     this.db?.close();
     this.db = null;
+    releaseStoreExecutionLease(this);
   }
 }

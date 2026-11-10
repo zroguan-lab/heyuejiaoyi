@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import { storeRunLocks, assertEntryAdmission, lifecycleStatus, trackMethods, drainOperations } from "../application/runtime-lifecycle.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { executionFillFacts, executionExcursionFacts, ownedExitFills, observeOwnedExitFills, entryOrderTimeFacts, entryFillTimeMatches, isTerminalOrder, verifiedProtectionExitOrders } from "./execution-fill-facts.js";
 import { acquireExecutionProcessLock } from "./entry-fact-process-lock.js";
+import { assertResetEpochSignal } from './forward-learning-window.js';
 import { EventEmitter } from "node:events";
 import { ACTIVE_ALGO_STATUSES, hasManagedTp1Lifecycle, effectivePositionStop, protectionOrderKnown, accountProtectionFactsKnown, blocksNewExecutionEntry } from "./protection-state.js";
 import { BinanceApiError, TestnetWriteDisabledError } from "./binance-testnet-trading.js";
@@ -41,7 +43,6 @@ import {
   observeTradeExcursion,
 } from "../domain/trade-excursion.js";
 
-const STORE_RUN_LOCKS = new WeakMap();
 const RUN_OPERATION_CONTEXT = new AsyncLocalStorage();
 const RECONCILE_BATCH_CONTEXT = new AsyncLocalStorage();
 
@@ -50,17 +51,7 @@ function noteIncompleteBatch() {
   if (batch) batch.complete = false;
 }
 
-function storeRunLocks(store) {
-  let locks = STORE_RUN_LOCKS.get(store);
-  if (!locks) {
-    locks = { reconciling: new Set(), executing: new Set(), tails: new Map(), owners: new Map(),
-      runtime: { known: true, active: false, generation: 0, fault: null, lastSuccessfulAt: null } };
-    STORE_RUN_LOCKS.set(store, locks);
-  }
-  return locks;
-}
-
-const TERMINAL_STATUSES = new Set(["CLOSED", "CANCELED", "REJECTED", "FAILED"]);
+const TERMINAL_STATUSES = new Set(["CLOSED", "CANCELED", "REJECTED", "FAILED", "FACT_CONFLICT_TERMINAL"]);
 const ENTRY_STATUSES = new Set(["ENTRY_SUBMITTING", "SUBMISSION_UNKNOWN", "ENTRY_PENDING", "PARTIALLY_FILLED", "ENTRY_FACT_PENDING", "ENTRY_FACT_CONFLICT"]);
 const PROTECTED_STATUSES = new Set([
   "PROTECTION_PENDING", "PROTECTION_INCOMPLETE", "OPEN_PROTECTED", "TP1_FILLED", "ERROR_UNPROTECTED",
@@ -425,6 +416,12 @@ export class TestnetCanaryExecutor extends EventEmitter {
     this.executing = locks.executing;
     this.lastReconcileAt = null;
     this.lastReconcileError = null;
+    this.stopGeneration = 0;
+    this.stopped = false;
+    trackMethods(this, store, { prepare: "entry", prepareOperatorCanary: "entry", execute: "entry", executeOwned: "entry",
+      verifyTradingPermission: "entry", withRunOwnership: "management", reconcile: "management", reconcileAll: "management",
+      start: "management", engageEmergencyStop: "management", clearEmergencyStop: "management",
+      snapshot: "management", permissionStatus: "management" });
   }
 
   assertAllowedSymbol(symbol) {
@@ -434,10 +431,12 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   runtimeStatus() {
-    return structuredClone(storeRunLocks(this.store).runtime);
+    return { ...structuredClone(storeRunLocks(this.store).runtime), maintenance: lifecycleStatus(this.store) };
   }
 
   assertRuntimeReady() {
+    assertEntryAdmission(this.store);
+    if (this.stopped) throw new Error("执行器已停止，禁止新入场");
     if (storeRunLocks(this.store).runtime.active) throw new Error("执行对账运行故障尚未通过完整新对账，禁止新入场");
   }
 
@@ -524,6 +523,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async verifyTradingPermission(account, { symbol, symbolInfo = null, plan = null } = {}) {
+    this.assertRuntimeReady();
     this.assertAllowedSymbol(symbol);
     if (account.canTrade) return { allowed: true, source: "ACCOUNT_CAN_TRADE" };
     let attestation;
@@ -584,6 +584,8 @@ export class TestnetCanaryExecutor extends EventEmitter {
     const signalRecord = structuredClone(typeof this.store.getExecutionSignal === "function"
       ? await this.store.getExecutionSignal(signalId, resolvedStrategySource)
       : await this.store.getSignal(signalId));
+    const epoch=typeof this.store.getMetadata==='function'?(await this.store.getMetadata('active_strategy_performance_epoch'))?.value:null;
+    assertResetEpochSignal(signalRecord,epoch);
     const symbol = this.assertAllowedSymbol(signalRecord?.candidate?.symbol);
     const activeRuns = await this.store.listActiveExecutionRuns();
     const [accountState, symbolInfo, leverageBrackets] = await Promise.all([
@@ -755,7 +757,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
       const outcome = await this.applyVerifiedAccountChange(run, {
         label: "逐仓模式配置",
         auditPrefix: "MARGIN_TYPE",
-        apply: () => this.client.setMarginType(symbol, "ISOLATED"),
+        apply: () => { this.assertRuntimeReady(); return this.client.setMarginType(symbol, "ISOLATED"); },
         matches: (snapshot) => snapshot?.symbolConfig?.marginType === "ISOLATED",
         acceptedError: (error) => error instanceof BinanceApiError && error.apiCode === -4046,
       });
@@ -772,7 +774,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
       const outcome = await this.applyVerifiedAccountChange(run, {
         label: "杠杆配置",
         auditPrefix: "LEVERAGE",
-        apply: () => this.client.setLeverage(symbol, targetLeverage),
+        apply: () => { this.assertRuntimeReady(); return this.client.setLeverage(symbol, targetLeverage); },
         matches: (snapshot) => Number(snapshot?.symbolConfig?.leverage) === targetLeverage,
       });
       if (!outcome.verifiedAfterUnknown && Number(outcome.result?.leverage) !== targetLeverage) {
@@ -828,7 +830,8 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   acquireProcessLock() {
-    if (!this.releaseProcessLock) this.releaseProcessLock = acquireExecutionProcessLock(this.store.filePath);
+    if (!this.releaseProcessLock) this.releaseProcessLock = typeof this.store.borrowExecutionLease==='function'
+      ? this.store.borrowExecutionLease() : acquireExecutionProcessLock(this.store.filePath);
   }
 
   async execute(runId, confirmationCode) {
@@ -838,6 +841,7 @@ export class TestnetCanaryExecutor extends EventEmitter {
   async executeOwned(runId, confirmationCode) {
     this.assertRuntimeReady();
     if (!this.enabled) throw new TestnetWriteDisabledError("executeCanary");
+    if((await this.store.getExecutionRun(runId))?.status==='FACT_CONFLICT_TERMINAL')throw new Error('FACT_CONFLICT_TERMINAL_CANNOT_REOPEN');
     this.acquireProcessLock();
     if (this.executing.has(runId)) throw new Error(`执行记录 ${runId} 正在提交，拒绝并发执行`);
     this.executing.add(runId);
@@ -2508,6 +2512,11 @@ export class TestnetCanaryExecutor extends EventEmitter {
   }
 
   async start() {
+    const generation = this.stopGeneration;
+    // Maintenance closes ENTRY admission, not startup of existing-position
+    // management. Bootstrap may construct us after a signal; its live operation
+    // must still acquire ownership and initialize reconciliation before proof.
+    if (this.stopped) return;
     this.acquireProcessLock();
     try {
       const active = await this.store.listActiveExecutionRuns();
@@ -2516,22 +2525,30 @@ export class TestnetCanaryExecutor extends EventEmitter {
         throw new Error(`存在 ${unmanaged.length} 个未结束的测试网执行记录，写入锁关闭时拒绝启动执行协调器`);
       }
       await this.reconcileAll();
-      if (this.timer) return;
+      if (this.timer || this.stopped || generation !== this.stopGeneration) return;
       this.timer = setInterval(() => {
         // Also catches synchronous overrides and failures of the outer boundary.
-        void Promise.resolve().then(() => this.reconcileAll()).catch(() => this.recordRuntimeFault("SCHEDULED_RECONCILIATION"));
+        if (storeRunLocks(this.store).maintenance.managementPaused) return;
+        void Promise.resolve().then(() => this.reconcileAll()).catch(error => {
+          if (error?.code !== "MAINTENANCE_PAUSED") this.recordRuntimeFault("SCHEDULED_RECONCILIATION");
+        });
       }, this.pollMs);
       this.timer.unref?.();
     } catch (error) {
-      this.stop();
+      await this.stop();
       throw error;
     }
   }
 
-  stop() {
+  async stop({ releaseLock = true } = {}) {
+    this.stopped = true;
+    this.stopGeneration += 1;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    if (!this.executing.size && !this.reconciling.size && this.releaseProcessLock) {
+    await drainOperations(this.store, { owner: this });
+    const locks = storeRunLocks(this.store);
+    if (releaseLock && !locks.operations.size && !locks.tails.size && !locks.owners.size
+      && !this.executing.size && !this.reconciling.size && this.releaseProcessLock) {
       this.releaseProcessLock();
       this.releaseProcessLock = null;
     }

@@ -1,6 +1,31 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { TestnetAccountMonitor } from "../src/application/testnet-account-monitor.js";
+import { lifecycleStatus } from "../src/application/runtime-lifecycle.js";
+
+test("TEAM031 account stop drains late snapshot write and startup cannot rearm", async () => {
+  let release, entered, writes = 0;
+  const gate = new Promise(r => { release = r; }), ready = new Promise(r => { entered = r; });
+  const store = { latestTestnetAccountSnapshot: async () => null, saveTestnetAccountSnapshot: async () => { writes++; } };
+  const monitor = new TestnetAccountMonitor({ store, enabled: true, client: { fetchSnapshot: async () => {
+    entered(); await gate; return { syncedAt: 1, account: {}, positions: [], openOrders: [], openAlgoOrders: [] };
+  } } });
+  const starting = monitor.start(); await ready;
+  let stopped = false; const stopping = monitor.stop().then(() => { stopped = true; });
+  await Promise.resolve(); assert.equal(stopped, false); assert.ok(lifecycleStatus(store).inFlight >= 2);
+  release(); await starting; await stopping;
+  assert.equal(writes, 1); assert.equal(monitor.timer, null); assert.equal(lifecycleStatus(store).inFlight, 0);
+  assert.equal((await monitor.sync()).reason, "account_monitor_stopped");
+});
+
+test("TEAM031 account stop crossing cached initialization never installs timer", async () => {
+  let release; const gate = new Promise(r => { release = r; }); let fetches = 0;
+  const monitor = new TestnetAccountMonitor({ enabled: true, store: { latestTestnetAccountSnapshot: () => gate },
+    client: { fetchSnapshot: async () => { fetches++; } } });
+  const starting = monitor.start(), stopping = monitor.stop();
+  release(null); await starting; await stopping;
+  assert.equal(monitor.timer, null); assert.equal(fetches, 0);
+});
 
 test("账户监控把 Binance 测试网作为事实源并将快照投影到存储", async () => {
   const saved = [];

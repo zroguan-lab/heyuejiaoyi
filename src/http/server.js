@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { beginMaintenance, drainOperations, lifecycleStatus, storeRunLocks, trackOperation } from "../application/runtime-lifecycle.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -123,7 +124,7 @@ export function createDashboardServer({ monitor, accountMonitor = null, executio
       safetyHold,
       executionRuntime,
       effectiveOrderSubmissionEnabled: Boolean(gateway.orderSubmissionEnabled && !emergencyStop.active && !safetyHold.active
-        && executionRuntime.known === true && executionRuntime.active === false),
+        && executionRuntime.known === true && executionRuntime.active === false && !storeRunLocks(store).maintenance.active),
       capacity,
       automation: strategyExecutionCoordinator?.snapshot() ?? { enabled: false, status: "DISABLED", lastDecision: null },
       readiness: assessTestnetReadiness({
@@ -137,7 +138,17 @@ export function createDashboardServer({ monitor, accountMonitor = null, executio
     };
   };
 
-  const server = createServer(async (request, response) => {
+  const server = createServer((request, response) => {
+    if (storeRunLocks(store).maintenance.active) {
+      if (request.method === "GET" && request.url?.split("?")[0] === "/api/health") {
+        const maintenance = lifecycleStatus(store);
+        sendJson(response, 200, { ok: true, maintenance, monitor: monitor.snapshot(), execution: {
+          effectiveOrderSubmissionEnabled: false, executionRuntime: { known: true, maintenance },
+          readiness: { canPrepareCanary: false, blockedReasons: [{ code: "MAINTENANCE_ENTRY_ADMISSION" }] } } });
+      } else sendJson(response, 503, { error: "Maintenance paused", maintenance: lifecycleStatus(store) });
+      return;
+    }
+    void trackOperation(store, server, "http-request", async () => {
     try {
       const url = new URL(request.url, `http://${request.headers.host ?? "localhost"}`);
       if (request.method === "GET" && url.pathname === "/api/health") {
@@ -365,7 +376,19 @@ export function createDashboardServer({ monitor, accountMonitor = null, executio
       }
       else response.end();
     }
+    }).catch(() => { if (!response.headersSent) sendJson(response, 503, { error: "Maintenance paused" }); else response.end(); });
   });
+
+  server.beginMaintenanceDrain = () => beginMaintenance(store);
+  server.drain = () => drainOperations(store, { owner: server });
+  server.closeGracefully = async () => {
+    await server.drain();
+    // SSE must end BEFORE close; waiting for the close event creates a cycle.
+    for (const response of eventClients) response.end();
+    eventClients.clear();
+    if (!server.listening) return;
+    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  };
 
   server.on("close", () => {
     monitor.off("analysis", onAnalysis);

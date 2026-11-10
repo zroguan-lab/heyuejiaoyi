@@ -3,6 +3,28 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { createDashboardServer, listen } from "../src/http/server.js";
 
+test("TEAM031 slow HTTP business drains before close while SSE ends without close-event cycle", async t => {
+  let release, entered, reads = 0;
+  const gate = new Promise(r => { release = r; }), ready = new Promise(r => { entered = r; });
+  const monitor = new EventEmitter(); monitor.snapshot = () => ({ status: "IDLE" });
+  const store = { listSignals: async () => { reads++; entered(); await gate; return []; } };
+  const config = { marketEnvironment: "TESTNET", portfolio: { startingEquity: 500 }, execution: {}, host: "127.0.0.1", port: 0 };
+  const server = createDashboardServer({ monitor, store, config, logger: { error() {} } });
+  const address = await listen(server, config), base = `http://127.0.0.1:${address.port}`;
+  t.after(() => { release(); server.closeAllConnections(); server.close(); });
+  const events = await fetch(`${base}/api/events`), reader = events.body.getReader(); await reader.read();
+  const pending = fetch(`${base}/api/signals`); await ready;
+  server.beginMaintenanceDrain();
+  let closed = false; const closing = server.closeGracefully().then(() => { closed = true; });
+  await Promise.resolve(); assert.equal(closed, false);
+  const health = await (await fetch(`${base}/api/health`)).json();
+  assert.equal(health.execution.effectiveOrderSubmissionEnabled, false); assert.equal(reads, 1);
+  assert.equal((await fetch(`${base}/api/scan`, { method: "POST" })).status, 503);
+  release(); assert.equal((await pending).status, 200);
+  await closing; assert.equal(closed, true);
+  while (!(await reader.read()).done) { /* consume SSE close */ }
+});
+
 test("研究API返回组合状态并允许记录手动跟单但不会暴露执行能力", async () => {
   const entryTime = Date.parse("2026-09-29T01:00:00Z");
   const exitTime = Date.parse("2026-09-29T02:00:00Z");

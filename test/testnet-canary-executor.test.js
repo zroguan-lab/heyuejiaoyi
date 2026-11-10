@@ -1,4 +1,83 @@
 import test from "node:test";
+import { beginMaintenance, lifecycleStatus, storeRunLocks, verifyHandoffFacts } from "../src/application/runtime-lifecycle.js";
+
+test("TEAM031 handoff verifier accepts actual canary plan and completed protection, not cached or missing TP", async () => {
+  const { executor, client, run } = await tpRecoveryFixture();
+  await executor.ensureProtection(run, 0.0012);
+  const account = { environment: "TESTNET", authority: "BINANCE_TESTNET", positionMode: "ONE_WAY",
+    positions: structuredClone(client.account.positions), openOrders: [],
+    openAlgoOrders: [...client.algos.values()].map(order => ({ ...structuredClone(order), positionSide: "BOTH" })),
+    symbolConfig: [{ symbol: run.symbol, leverage: run.plan.leverage, marginType: "ISOLATED" }] };
+  const check = () => verifyHandoffFacts({ account, runs: [run], requestStartedAt: 1, responseReceivedAt: 2, now: 3 });
+  assert.equal(check().safe, true, JSON.stringify(check()));
+  const removed = account.openAlgoOrders.pop();
+  assert.equal(check().safe, false); account.openAlgoOrders.push(removed);
+  run.protection.observations = { stop: { known: false } };
+  assert.equal(check().safe, false);
+});
+
+test("TEAM031 same Store direct prepare and execute cannot bypass maintenance", async () => {
+  const store = new MemoryStore(signalRecord(1000000)), client = new FakeTradingClient();
+  const a = new TestnetCanaryExecutor({ store, client, enabled: true, now: () => 1000000 });
+  const prepared = await a.prepare("gate");
+  const b = new TestnetCanaryExecutor({ store, client, enabled: true, now: () => 1000000 });
+  beginMaintenance(store);
+  await assert.rejects(b.prepare("new"), { code: "MAINTENANCE_PAUSED" });
+  await assert.rejects(b.prepareOperatorCanary(), { code: "MAINTENANCE_PAUSED" });
+  await assert.rejects(b.execute(prepared.run.id, prepared.confirmationCode), { code: "MAINTENANCE_PAUSED" });
+  assert.equal(client.calls.placeEntry, 0); assert.equal(b.runtimeStatus().maintenance.active, true);
+});
+
+test("TEAM031 maintenance crossing prepare account await writes no new plan and makes no permission or entry request", async () => {
+  const store = new MemoryStore(signalRecord(1000000)), client = new FakeTradingClient();
+  let release, entered; const gate = new Promise(r => { release = r; }), ready = new Promise(r => { entered = r; });
+  const fetch = client.fetchAccountState.bind(client);
+  client.fetchAccountState = async (...args) => { entered(); await gate; return fetch(...args); };
+  const executor = new TestnetCanaryExecutor({ store, client, enabled: true, now: () => 1000000 });
+  const pending = executor.prepare("race"); await ready; beginMaintenance(store); release();
+  await assert.rejects(pending, { code: "MAINTENANCE_PAUSED" });
+  assert.equal(store.runs.size, 0); assert.equal(client.calls.placeEntry, 0); assert.equal(client.calls.permissionTests ?? 0, 0);
+});
+
+test("TEAM031 executor stop waits ownership waiter then rejects unsubmitted entry before releasing lock", async () => {
+  const store = new MemoryStore(signalRecord(1000000)), client = new FakeTradingClient();
+  const executor = new TestnetCanaryExecutor({ store, client, enabled: true, now: () => 1000000 });
+  const prepared = await executor.prepare("waiting");
+  let release, entered, unlocked = false;
+  const gate = new Promise(r => { release = r; }), ready = new Promise(r => { entered = r; });
+  executor.releaseProcessLock = () => { unlocked = true; };
+  const holder = executor.withRunOwnership(prepared.run.id, async () => { entered(); await gate; });
+  await ready;
+  const execution = executor.execute(prepared.run.id, prepared.confirmationCode);
+  assert.ok(lifecycleStatus(store).inFlight >= 3);
+  const rejection = assert.rejects(execution, /停止/);
+  let stopped = false; const stopping = executor.stop().then(() => { stopped = true; });
+  await Promise.resolve(); assert.equal(unlocked, false); assert.equal(stopped, false);
+  release(); await holder; await rejection; await stopping;
+  assert.equal(client.calls.placeEntry, 0); assert.equal(unlocked, true);
+});
+
+test("TEAM031 maintenance after actual entry submission preserves original SL TP2 TP1 management", async () => {
+  const store = new MemoryStore(signalRecord(1000000)), client = new FakeTradingClient();
+  client.fillEntryImmediately = true;
+  const executor = new TestnetCanaryExecutor({ store, client, enabled: true, now: () => 1000000 });
+  const prepared = await executor.prepare("submitted"), post = client.placeLimitOrder.bind(client);
+  client.placeLimitOrder = async (...args) => { const ack = await post(...args); beginMaintenance(store); return ack; };
+  const run = await executor.execute(prepared.run.id, prepared.confirmationCode);
+  assert.equal(run.status, "OPEN_PROTECTED"); assert.equal(client.calls.placeEntry, 1);
+  assert.deepEqual(client.calls.placeAlgo.map(o => o.role), ["stop", "tp2", "tp1"]);
+  assert.equal(storeRunLocks(store).maintenance.active, true);
+  await executor.reconcileAll(); assert.equal(storeRunLocks(store).maintenance.active, true);
+});
+
+test("TEAM031 startup account await cannot reinstall executor timer after resource stop", async () => {
+  let release, entered; const gate = new Promise(r => { release = r; }), ready = new Promise(r => { entered = r; });
+  const store = { async listActiveExecutionRuns() { entered(); await gate; return []; } };
+  const executor = new ProductionExecutor({ store, client: {}, enabled: false });
+  executor.acquireProcessLock = () => {};
+  const starting = executor.start(); await ready; const stopping = executor.stop(); release();
+  await starting; await stopping; assert.equal(executor.timer, null);
+});
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { TestnetCanaryExecutor as ProductionExecutor } from "../src/execution/testnet-canary-executor.js";

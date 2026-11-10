@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { assertEntryAdmission, drainOperations, trackMethods } from "./runtime-lifecycle.js";
 import { advanceTradeTimeline, createSimulatedTrade } from "../domain/trade-lifecycle.js";
 import { buildCorrelationMatrix, selectPortfolioCandidates } from "../domain/portfolio.js";
 import { buildMarketRegime } from "../domain/market-regime.js";
@@ -54,6 +55,9 @@ export class ResearchMonitor extends EventEmitter {
     this.returnSeries = new Map();
     this.timer = null;
     this.running = false;
+    this.stopped = false;
+    this.stopGeneration = 0;
+    trackMethods(this, store, { initialize: "management", scanAll: "management", start: "management" });
     this.state = {
       startedAt: null,
       lastScanStartedAt: null,
@@ -451,6 +455,8 @@ export class ResearchMonitor extends EventEmitter {
   }
 
   async scanAll() {
+    if (this.stopped) return { skipped: true, reason: "monitor_stopped" };
+    assertEntryAdmission(this.store);
     if (this.running) return { skipped: true, reason: "previous_scan_running" };
     this.running = true;
     this.state.lastScanStartedAt = new Date().toISOString();
@@ -550,17 +556,23 @@ export class ResearchMonitor extends EventEmitter {
   }
 
   async start() {
-    if (this.timer) return;
+    const generation = this.stopGeneration;
+    if (this.timer || this.stopped) return;
     this.state.startedAt = new Date().toISOString();
     await this.initialize();
+    if (this.stopped || generation !== this.stopGeneration) return;
     await this.scanAll();
-    this.timer = setInterval(() => void this.scanAll(), this.config.pollMs);
+    if (this.stopped || generation !== this.stopGeneration) return;
+    this.timer = setInterval(() => { void this.scanAll().catch(error => this.logger.error("[monitor] scan failed", error)); }, this.config.pollMs);
     this.timer.unref?.();
   }
 
-  stop() {
+  async stop() {
+    this.stopped = true;
+    this.stopGeneration += 1;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    await drainOperations(this.store, { owner: this });
   }
 
   snapshot() {

@@ -11,11 +11,18 @@ import { pathToFileURL } from "node:url";
 // Resource wrapper only. It neither dispatches commands nor grants trading access.
 export async function runWithCanaryCleanup(store, action) {
   let executor = null;
-  try { return await action(value => { executor = value; return value; }); }
-  finally {
-    try { executor?.stop(); }
-    finally { store.close(); }
+  let value, failure = null;
+  try { value = await action(resource => { executor = resource; return resource; }); }
+  catch (error) { failure = error; }
+  try { await executor?.stop(); }
+  catch (error) {
+    if (!failure) failure = error;
+    else if (failure instanceof Error) failure.cleanupError = error;
   }
+  try { await store.close(); }
+  catch (error) { if (!failure) failure = error; else if (failure instanceof Error) failure.storeCleanupError = error; }
+  if (failure) throw failure;
+  return value;
 }
 
 function usage() {

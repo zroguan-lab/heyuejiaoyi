@@ -1,6 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ResearchMonitor } from "../src/application/research-monitor.js";
+import { lifecycleStatus } from "../src/application/runtime-lifecycle.js";
+
+test("TEAM031 stop waits both initialization and first scan and cannot rearm either await", async () => {
+  for (const stage of ["initialize", "scanAll"]) {
+    let release, entered;
+    const gate = new Promise(r => { release = r; }), ready = new Promise(r => { entered = r; });
+    const store = {}, monitor = new ResearchMonitor({ primaryExchange: {}, store, config: { symbols: [], pollMs: 10000 } });
+    monitor.initialize = async () => {};
+    monitor.scanAll = async () => {};
+    monitor[stage] = async () => { entered(); await gate; };
+    const starting = monitor.start(); await ready;
+    let stopped = false; const stopping = monitor.stop().then(() => { stopped = true; });
+    await Promise.resolve(); assert.equal(stopped, false); assert.ok(lifecycleStatus(store).inFlight > 0);
+    release(); await starting; await stopping;
+    assert.equal(monitor.timer, null); assert.equal(stopped, true);
+    assert.equal((await ResearchMonitor.prototype.scanAll.call(monitor)).reason, "monitor_stopped");
+  }
+});
 
 test("资金费率接口失败不会阻断价格路径推进", async () => {
   const messages = [];

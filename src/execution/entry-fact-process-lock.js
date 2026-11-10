@@ -1,4 +1,4 @@
-import { openSync, readFileSync, writeFileSync, closeSync, unlinkSync, realpathSync } from "node:fs";
+import { openSync, readFileSync, writeFileSync, closeSync, unlinkSync, realpathSync, existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 
@@ -13,6 +13,7 @@ export function acquireExecutionProcessLock(filePath) {
     databasePath = resolve(filePath);
   }
   const lockPath = `${databasePath}.execution.lock`;
+  if (existsSync(`${databasePath}.maintenance.lock`)) throw new Error('受控维护仍持有数据库，禁止启动执行实例');
   const token = randomUUID();
   let descriptor;
   try {
@@ -35,4 +36,20 @@ export function acquireExecutionProcessLock(filePath) {
     unlinkSync(lockPath);
     released = true;
   };
+}
+
+const storeLeases=new WeakMap();
+export function acquireStoreExecutionLease(store) {
+  if(storeLeases.has(store))return;
+  storeLeases.set(store,acquireExecutionProcessLock(store.filePath));
+}
+export function borrowStoreExecutionLease(store) {
+  if(!storeLeases.has(store))throw new Error('Store does not own an execution lease');
+  // The database owner releases only after close. Executor stop cannot expose an
+  // unlocked, still-open Store. Another Store never receives this capability.
+  return ()=>{};
+}
+export function releaseStoreExecutionLease(store) {
+  const release=storeLeases.get(store);if(!release)return;
+  release();storeLeases.delete(store);
 }

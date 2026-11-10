@@ -45,6 +45,7 @@ function snapshotExclusion(s, protocol, cutoff, registeredAt) {
 }
 
 function formalOutcome(run, entry, decision, protocol, cutoff) {
+  if(run.learningEligible===false||run.terminalClassification)return{reason:'LEARNING_INELIGIBLE_EXECUTION_QUALITY'};
   if (run.sourceType !== "SIGNAL" || run.performanceEligible === false || run.executionSource !== "V2_PRODUCTION"
     || run.plan?.strategyVersion !== protocol.demoStrategyVersion || run.plan?.signalModelVersion !== protocol.signalModelVersion) {
     return { reason: "FORMAL_SOURCE_OR_VERSION_INVALID" };

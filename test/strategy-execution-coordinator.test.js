@@ -1,4 +1,44 @@
 import test from "node:test";
+import { beginMaintenance } from "../src/application/runtime-lifecycle.js";
+
+test("TEAM031 queued entries are counted and stop discards not-started work while awaiting running work", async () => {
+  const store = new MemoryStore(), executor = new FakeExecutor(store);
+  const coordinator = new StrategyExecutionCoordinator({ monitor: new EventEmitter(), executor, store, enabled: true });
+  let release, entered; const gate = new Promise(r => { release = r; }), ready = new Promise(r => { entered = r; });
+  const events = [];
+  coordinator.enqueue(async () => { events.push("running"); entered(); await gate; events.push("done"); });
+  coordinator.enqueue(async () => events.push("must-not-run"));
+  await ready; assert.equal(coordinator.snapshot().queued, 1); assert.equal(coordinator.snapshot().running, 1);
+  let stopped = false; const stopping = coordinator.stop().then(() => { stopped = true; });
+  coordinator.enqueue(async () => events.push("post-stop"));
+  await Promise.resolve(); assert.equal(stopped, false);
+  release(); await stopping;
+  assert.deepEqual(events, ["running", "done"]); assert.equal(coordinator.snapshot().queued, 0);
+});
+
+test("TEAM031 direct and queued same-signal admission singleflights; prepare await cannot cross maintenance", async () => {
+  const now = 900000, store = new MemoryStore([signal("race", now)]), executor = new FakeExecutor(store);
+  const coordinator = new StrategyExecutionCoordinator({ monitor: new EventEmitter(), executor, store, enabled: true, now: () => now });
+  let release, entered; const gate = new Promise(r => { release = r; }), ready = new Promise(r => { entered = r; });
+  const prepare = executor.prepare.bind(executor);
+  executor.prepare = async (...args) => { entered(); await gate; return prepare(...args); };
+  const first = coordinator.trySignal("race", "DIRECT");
+  assert.equal(coordinator.trySignal("race", "SECOND"), first);
+  await ready; beginMaintenance(store); release();
+  await assert.rejects(first, { code: "MAINTENANCE_PAUSED" });
+  assert.equal(executor.prepared.length, 1); assert.equal(executor.executed.length, 0);
+  await coordinator.stop();
+});
+
+test("TEAM031 coordinator startup sweep stop cannot rearm recovery interval", async () => {
+  const store = new MemoryStore(), executor = new FakeExecutor(store);
+  const coordinator = new StrategyExecutionCoordinator({ monitor: new EventEmitter(), executor, store, enabled: true });
+  let release, entered; const gate = new Promise(r => { release = r; }), ready = new Promise(r => { entered = r; });
+  coordinator.sweep = async () => { entered(); await gate; };
+  const starting = coordinator.start(); await ready; const stopping = coordinator.stop();
+  release(); await starting; await stopping;
+  assert.equal(coordinator.recoveryTimer, null); assert.equal(coordinator.started, false);
+});
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";

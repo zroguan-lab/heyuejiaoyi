@@ -1,4 +1,5 @@
 import { loadConfig } from "./config.js";
+import { RuntimeLifecycle, createAccountCollector, createHandoffVerifier, trackOperation } from "./application/runtime-lifecycle.js";
 import { createMarketDataClient, providerLabel } from "./exchanges/create-client.js";
 import { ResearchStore } from "./infrastructure/research-store.js";
 import { ResearchMonitor } from "./application/research-monitor.js";
@@ -20,6 +21,7 @@ import {
   buildPerformanceEpoch,
 } from "./execution/execution-strategy-source.js";
 
+let activeLifecycle = null;
 async function main() {
   loadDotEnv();
   const config = loadConfig();
@@ -28,6 +30,12 @@ async function main() {
     ? null
     : createMarketDataClient({ ...config, provider: config.auxiliaryProvider });
   const store = new ResearchStore(config.databasePath);
+  const lifecycle = new RuntimeLifecycle({ store, exit: code => process.exit(code) });
+  activeLifecycle = lifecycle;
+  // Persistent handlers exist before the first Store/start await. Bootstrap is
+  // itself a registered writer; a signal cannot close Store underneath it.
+  lifecycle.installSignalHandlers(process);
+  return await trackOperation(store, lifecycle, "bootstrap", async () => {
   await store.initialize();
   let performanceEpoch = (await store.getMetadata(PERFORMANCE_EPOCH_METADATA_KEY))?.value ?? null;
   if (config.execution.autoExecutionEnabled
@@ -72,6 +80,7 @@ async function main() {
   }
   const notifier = new WindowsNotifier({ enabled: config.notifications.windowsEnabled });
   const monitor = new ResearchMonitor({ primaryExchange, auxiliaryExchange, store, notifier, config });
+  lifecycle.monitor = monitor;
   await monitor.initialize();
   const executionAllowedSymbols = await resolveExecutionAllowedSymbols(store, config);
   const accountClient = config.execution.accountReadOnlyEnabled
@@ -89,6 +98,7 @@ async function main() {
     enabled: config.execution.accountReadOnlyEnabled,
     pollMs: config.execution.accountPollMs,
   });
+  lifecycle.accountMonitor = accountMonitor;
   const tradingClient = config.execution.accountReadOnlyEnabled
     ? new BinanceTestnetTradingClient({
       baseUrl: config.binanceBaseUrl,
@@ -117,6 +127,8 @@ async function main() {
       strategySource: config.execution.strategySource,
     })
     : null;
+  lifecycle.executor = canaryExecutor;
+  lifecycle.verifyHandoff = createHandoffVerifier({ store, collectAccount: tradingClient ? createAccountCollector(tradingClient) : null });
   const executionGateway = config.marketEnvironment === "TESTNET"
     ? new TestnetExecutionGateway({
       environment: config.marketEnvironment,
@@ -156,6 +168,8 @@ async function main() {
     })
     : null;
   const server = createDashboardServer({ monitor, accountMonitor, executionGateway, canaryExecutor, strategyExecutionCoordinator, store, config });
+  lifecycle.coordinator = strategyExecutionCoordinator;
+  lifecycle.server = server;
   await canaryExecutor?.start();
   await strategyExecutionCoordinator?.start();
   await listen(server, config);
@@ -170,23 +184,13 @@ async function main() {
   void monitor.start().catch((error) => console.error("[monitor] 启动扫描失败", error));
   void accountMonitor.start().catch((error) => console.error("[testnet-account] 启动失败", error));
 
-  const shutdown = () => {
-    console.info("\n正在停止监控…");
-    monitor.stop();
-    accountMonitor.stop();
-    strategyExecutionCoordinator?.stop();
-    canaryExecutor?.stop();
-    server.close(() => {
-      store.close();
-      process.exit(0);
-    });
-    setTimeout(() => process.exit(1), 5_000).unref();
-  };
-  process.once("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
+  });
 }
 
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
+  if (activeLifecycle) {
+    // No natural-exit shortcut after resources or ownership may have opened.
+    void activeLifecycle.requestShutdown("STARTUP_FAILED");
+  } else process.exitCode = 1;
 });
